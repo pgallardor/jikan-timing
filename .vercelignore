@@ -1,0 +1,7 @@
+.env*
+/csv/
+/supabase/
+/local-backups/
+/.supabase-cli-home/
+qr-antuco-resultados.png
+qr-antuco-resultados.svg

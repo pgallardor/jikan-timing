@@ -1,0 +1,1 @@
+-- No seed de participantes: la primera nómina se importa desde la administración del evento.

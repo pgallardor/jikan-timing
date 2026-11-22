@@ -598,3 +598,31 @@ button { cursor: pointer; }
   .admin-ui .event-tabs { gap: 6px; }
   .admin-ui .event-tabs button { min-height: 40px; padding: 0 11px; font-size: 13px; }
 }
+/* Operator tools: roster edits, audited withdrawals and manual finish sheet. */
+.participant-actions { display: flex; gap: .4rem; flex-wrap: wrap; min-width: 170px; }
+.operator-dialog { width: min(760px, calc(100vw - 32px)); max-height: 90vh; border: 1px solid #d3dce3; border-radius: 12px; padding: 24px; color: #172b39; background: #fff; overflow-y: auto; }
+.operator-dialog::backdrop { background: rgb(12 27 39 / 55%); }
+.operator-dialog-heading, .operator-dialog-footer, .manual-grid-tools { display: flex; gap: 12px; align-items: center; justify-content: space-between; margin: 12px 0; }
+.operator-dialog h2 { margin: 0; }
+.operator-dialog > p { margin: 12px 0; }
+.operator-dialog label, .manual-finishes-grid label { display: flex; flex-direction: column; gap: 6px; font-size: .875rem; }
+.operator-dialog label.check-label, .manual-finishes-grid label.check-label { flex-direction: row; align-items: center; }
+.operator-edit-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin: 20px 0; }
+.operator-dialog-footer { justify-content: flex-end; }
+.manual-finishes-grid fieldset { border: 0; padding: 0; min-width: 0; }
+.manual-finishes-grid fieldset > label { max-width: 650px; margin-bottom: 16px; }
+.manual-finishes-grid textarea { width: 100%; min-height: 100px; padding: 10px; border: 1px solid #cbd5df; border-radius: 6px; font: inherit; }
+.manual-paste { margin: 16px 0; }
+.manual-paste label { margin: 12px 0; }
+.manual-paste summary, .participant-history-row summary { cursor: pointer; font-weight: 600; }
+.manual-grid-table input { min-width: 100px; width: 100%; }
+.manual-grid-table td:nth-child(4) input { min-width: 240px; }
+.manual-grid-table select { min-width: 180px; }
+.manual-grid-tools { justify-content: flex-start; flex-wrap: wrap; }
+.manual-grid-review { margin-top: 20px; }
+.participant-history-row { border-bottom: 1px solid #dbe1e7; padding: 16px 0; }
+.participant-history-row pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 350px; overflow: auto; font-size: .875rem; }
+@media (max-width: 600px) { .operator-edit-grid { grid-template-columns: 1fr; } .operator-dialog { padding: 16px; } }
+.participant-category-field { min-width: 0; }
+.new-category-fields { display: grid; gap: 8px; margin-top: 10px; }
+.new-category-fields small { color: var(--muted); line-height: 1.4; }

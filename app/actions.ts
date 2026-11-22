@@ -2,7 +2,7 @@
 
 import { revalidatePath, updateTag } from "next/cache";
 import { redirect } from "next/navigation";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { publicResultsCacheTag } from "@/lib/public-results";
@@ -21,6 +21,8 @@ import {
   type RosterMapping,
 } from "@/lib/roster-import";
 import { categoryWithGender, normalizeDistance, normalizeParticipantSex } from "@/lib/participant-category";
+import { prepareManualFinishes } from "@/lib/manual-finishes";
+import { buildCategoryCatalog, categoryAfterDistanceChange, participantBaseCategory, resolveCategoryChoice } from "@/lib/category-options";
 
 async function signedInClient() {
   const supabase = await createClient();
@@ -31,6 +33,25 @@ async function signedInClient() {
 
 function eventPath(eventId: string) {
   return "/admin/events/" + eventId;
+}
+
+async function categoryFromParticipantForm(supabase: Awaited<ReturnType<typeof createClient>>, eventId: string, formData: FormData, distance: string | null, sex: ReturnType<typeof normalizeParticipantSex>, bracket: string | null) {
+  // Preserve compatibility with existing import/HTTP clients that submit category directly.
+  if (!formData.has("category_choice")) return categoryWithGender(String(formData.get("category") ?? "").trim() || distance, sex, bracket);
+  const choice = String(formData.get("category_choice") ?? "");
+  if (!choice) return categoryWithGender(null, sex, bracket);
+  const { data, error } = await supabase.from("event_participants").select("distance,category,age_bracket").eq("event_id", eventId).range(0, 4999);
+  if (error) notice(eventPath(eventId), "error", "No se pudieron consultar las categorías de la nómina. Vuelve a intentarlo.");
+  const options = buildCategoryCatalog(data ?? [])[distance ?? ""] ?? [];
+  try {
+    const category = resolveCategoryChoice(choice, String(formData.get("new_category") ?? ""), options);
+    if (category === null) return categoryWithGender(null, sex, bracket);
+    const formatted = categoryWithGender(category, sex, bracket);
+    const existing = categoryAfterDistanceChange(participantBaseCategory(formatted, bracket), options);
+    return existing ? categoryWithGender(existing, sex, bracket) : formatted;
+  } catch (cause) {
+    notice(eventPath(eventId), "error", cause instanceof Error ? cause.message : "Categoría inválida.");
+  }
 }
 
 async function invalidatePublicResults(supabase: Awaited<ReturnType<typeof createClient>>, eventId: string) {
@@ -230,6 +251,8 @@ export async function addParticipantAction(formData: FormData) {
   const rawAge = String(formData.get("age") ?? "").trim();
   const age = rawAge ? Number(rawAge) : null;
   if (rawAge && (!/^\d{1,3}$/.test(rawAge) || age! > 120)) notice(eventPath(eventId), "error", "La edad debe ser un entero entre 0 y 120.");
+  const bracket = String(formData.get("age_bracket") ?? "").trim() || null;
+  const category = await categoryFromParticipantForm(supabase, eventId, formData, distance, sex, bracket);
   const person = {
     participant_id: null,
     bib: String(formData.get("bib") ?? "").trim() || null,
@@ -240,12 +263,8 @@ export async function addParticipantAction(formData: FormData) {
     rut: String(formData.get("rut") ?? "").trim() || null,
     distance,
     age,
-    age_bracket: String(formData.get("age_bracket") ?? "").trim() || null,
-    category: categoryWithGender(
-      distance || String(formData.get("category") ?? "").trim() || null,
-      sex,
-      String(formData.get("age_bracket") ?? "").trim() || null,
-    ),
+    age_bracket: bracket,
+    category,
     team: String(formData.get("team") ?? "").trim() || null,
   };
   if (!person.first_name) notice(eventPath(eventId), "error", "El nombre del corredor es obligatorio.");
@@ -273,6 +292,94 @@ export async function addParticipantAction(formData: FormData) {
   await invalidatePublicResults(supabase, eventId);
   revalidatePath(eventPath(eventId));
   notice(eventPath(eventId), "ok", "Corredor añadido a la nómina.");
+}
+
+export async function changeParticipantAction(formData: FormData) {
+  const supabase = await signedInClient();
+  const eventId = String(formData.get("event_id") ?? "");
+  const participantId = String(formData.get("participant_id") ?? "");
+  const action = String(formData.get("operation") ?? "");
+  const reason = String(formData.get("reason") ?? "").trim();
+  if (!z.uuid().safeParse(eventId).success || !z.uuid().safeParse(participantId).success) notice("/admin", "error", "Evento o corredor inválido.");
+  if (!["update", "remove", "dnf", "clear_dnf"].includes(action) || reason.length < 3 || reason.length > 200) notice(eventPath(eventId), "error", "Indica una acción válida y un motivo de entre 3 y 200 caracteres.");
+  if (action === "remove" && formData.get("confirm_remove") !== "on") notice(eventPath(eventId), "error", "Confirma la baja del corredor.");
+  let expected: unknown;
+  try { expected = JSON.parse(String(formData.get("expected") ?? "")); }
+  catch { notice(eventPath(eventId), "error", "Actualiza la nómina antes de editar al corredor."); }
+  if (!expected || typeof expected !== "object" || Array.isArray(expected)) notice(eventPath(eventId), "error", "Versión de nómina inválida.");
+  let values = {};
+  if (action === "update") {
+    const sex = normalizeParticipantSex(String(formData.get("sex") ?? ""));
+    const distance = normalizeDistance(String(formData.get("distance") ?? ""));
+    const rawAge = String(formData.get("age") ?? "").trim();
+    if (rawAge && (!/^\d{1,3}$/.test(rawAge) || Number(rawAge) > 120)) notice(eventPath(eventId), "error", "La edad debe ser un entero entre 0 y 120.");
+    const firstName = String(formData.get("first_name") ?? "").trim();
+    if (!firstName || firstName.length > 100 || !distance) notice(eventPath(eventId), "error", "Indica nombre (hasta 100 caracteres) y distancia.");
+    const bracket = String(formData.get("age_bracket") ?? "").trim() || null;
+    const category = await categoryFromParticipantForm(supabase, eventId, formData, distance, sex, bracket);
+    values = {
+      bib: String(formData.get("bib") ?? "").trim() || null,
+      chip: String(formData.get("chip") ?? "").replace(/\s/g, "").toUpperCase() || null,
+      first_name: firstName, last_name: String(formData.get("last_name") ?? "").trim() || null,
+      sex, distance, age: rawAge ? Number(rawAge) : null, age_bracket: bracket,
+      category,
+      rut: String(formData.get("rut") ?? "").trim() || null, team: String(formData.get("team") ?? "").trim() || null,
+    };
+  }
+  const { error } = await supabase.rpc("change_event_participant", {
+    p_event_id: eventId, p_participant_id: participantId, p_action: action, p_values: values, p_expected: expected, p_reason: reason,
+  });
+  if (error) notice(eventPath(eventId), "error", error.code === "23505" ? "Ese dorsal o chip ya está asignado en este evento." : error.message);
+  await invalidatePublicResults(supabase, eventId);
+  revalidatePath(eventPath(eventId));
+  notice(eventPath(eventId), "ok", action === "update" ? "Datos del corredor actualizados con historial." : action === "remove" ? "Corredor dado de baja; sus datos y marcas se conservaron en el historial." : action === "dnf" ? "Corredor marcado como DNF." : "DNF retirado del corredor.");
+}
+
+export async function recordManualFinishesBatchAction(formData: FormData) {
+  const supabase = await signedInClient();
+  const eventId = String(formData.get("event_id") ?? "");
+  if (!z.uuid().safeParse(eventId).success) notice("/admin", "error", "Evento inválido.");
+  const schema = z.array(z.object({
+    input: z.object({ bib: z.string().max(100), mode: z.enum(["elapsed", "clock"]), value: z.string().max(100), reason: z.string().max(200) }),
+    expected_start_at: z.string(), expected_finish_at: z.string().nullable(), participant_id: z.uuid(),
+  })).min(1).max(5000);
+  let raw: unknown;
+  try { raw = JSON.parse(String(formData.get("rows") ?? "")); }
+  catch { notice(eventPath(eventId), "error", "No se pudo leer la planilla. Revísala nuevamente."); }
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success) notice(eventPath(eventId), "error", "La planilla contiene filas inválidas o supera 5000 llegadas.");
+  const { data: event } = await supabase.from("events").select("timezone").eq("id", eventId).maybeSingle();
+  if (!event) notice("/admin", "error", "No se encontró el evento.");
+  const participants = [];
+  const ids = parsed.data.map((row) => row.participant_id);
+  // Small ID batches avoid PostgREST URL and row limits on large events.
+  for (let offset = 0; offset < ids.length; offset += 100) {
+    const { data, error } = await supabase.from("event_results")
+      .select("participant_id,bib,first_name,last_name,start_at,finish_at,result_status")
+      .eq("event_id", eventId).in("participant_id", ids.slice(offset, offset + 100));
+    if (error) notice(eventPath(eventId), "error", "No se pudieron validar las marcas de la nómina.");
+    participants.push(...(data ?? []));
+  }
+  let prepared;
+  try {
+    prepared = prepareManualFinishes(parsed.data.map((row) => row.input), participants.map((p) => ({
+      id: p.participant_id, bib: p.bib, name: [p.first_name, p.last_name].filter(Boolean).join(" "),
+      startAt: p.start_at, finishAt: p.finish_at, dnf: p.result_status === "DNF",
+    })), event.timezone, String(formData.get("reason") ?? ""));
+  } catch (cause) { notice(eventPath(eventId), "error", cause instanceof Error ? cause.message : "Planilla inválida."); }
+  const payload = prepared.map((row, index) => {
+    if (row.error || !row.prepared) notice(eventPath(eventId), "error", `Fila ${index + 1}: ${row.error}`);
+    const reviewed = parsed.data[index];
+    if (reviewed.participant_id !== row.prepared.participant_id || reviewed.expected_start_at !== row.prepared.expected_start_at || reviewed.expected_finish_at !== row.prepared.expected_finish_at) {
+      notice(eventPath(eventId), "error", `Las marcas de la fila ${index + 1} cambiaron. Revisa nuevamente la planilla.`);
+    }
+    return row.prepared;
+  });
+  const { data, error } = await supabase.rpc("record_manual_finishes_batch", { p_event_id: eventId, p_rows: payload });
+  if (error) notice(eventPath(eventId), "error", error.message);
+  await invalidatePublicResults(supabase, eventId);
+  revalidatePath(eventPath(eventId));
+  redirect(eventPath(eventId) + "?ok=" + encodeURIComponent(`Se guardaron ${data} llegadas en una sola operación y con historial por fila.`) + "&batch_saved=" + randomUUID());
 }
 
 const rosterOperationSchema = z.array(z.object({

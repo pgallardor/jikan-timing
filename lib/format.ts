@@ -44,11 +44,17 @@ export function datetimeLocalValue(date: Date, timeZone: string) {
 }
 
 export function localDateTimeToUtc(value: string, timeZone: string) {
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value)) throw new Error("Indica una fecha y hora válidas.");
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?$/.test(value)) throw new Error("Indica una fecha y hora válidas.");
   const [datePart, timePart] = value.split("T");
   const [year, month, day] = datePart.split("-").map(Number);
-  const [hour, minute] = timePart.split(":").map(Number);
-  const assumedUtc = Date.UTC(year, month - 1, day, hour, minute);
+  const [hour, minute, seconds = 0] = timePart.split(":").map(Number);
+  const second = Math.floor(seconds);
+  const milliseconds = Math.round((seconds - second) * 1000);
+  const assumedUtc = Date.UTC(year, month - 1, day, hour, minute, second, milliseconds);
+  const calendar = new Date(assumedUtc);
+  if (calendar.getUTCFullYear() !== year || calendar.getUTCMonth() !== month - 1 || calendar.getUTCDate() !== day || hour > 23 || minute > 59 || seconds >= 60) {
+    throw new Error("Indica una fecha y hora válidas.");
+  }
   let result = assumedUtc;
   for (let pass = 0; pass < 2; pass += 1) {
     const parts = new Intl.DateTimeFormat("en-CA", {
@@ -69,11 +75,18 @@ export function localDateTimeToUtc(value: string, timeZone: string) {
       part("hour"),
       part("minute"),
       part("second"),
+      milliseconds,
     );
     result = assumedUtc - (observedUtc - result);
   }
   const converted = new Date(result);
   if (Number.isNaN(converted.valueOf())) throw new Error("Indica una fecha y hora válidas.");
+  const roundTrip = new Intl.DateTimeFormat("sv-SE", {
+    timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+  }).format(converted).replace(" ", "T");
+  if (roundTrip !== datePart + "T" + timePart.slice(0, 5) + ":" + String(second).padStart(2, "0")) {
+    throw new Error("Esa hora no existe en la zona horaria del evento.");
+  }
   return converted.toISOString();
 }
 

@@ -20,6 +20,10 @@ import AdminEventTabs from "@/components/admin-event-tabs";
 import AdminResultsTable from "@/components/admin-results-table";
 import FinishCorrectionsImporter from "@/components/finish-corrections-importer";
 import ParticipantPicker from "@/components/participant-picker";
+import ParticipantActions from "@/components/participant-actions";
+import ParticipantCategoryFields from "@/components/participant-category-fields";
+import { buildCategoryCatalog } from "@/lib/category-options";
+import ManualFinishesGrid from "@/components/manual-finishes-grid";
 import RosterImporter from "@/components/roster-importer";
 import EventTransferUploader from "@/components/event-transfer-uploader";
 import { createClient } from "@/lib/supabase/server";
@@ -144,7 +148,7 @@ export default async function EventPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ ok?: string; error?: string }>;
+  searchParams: Promise<{ ok?: string; error?: string; batch_saved?: string }>;
 }) {
   const { id } = await params;
   const notice = await searchParams;
@@ -161,20 +165,24 @@ export default async function EventPage({
     { data: ingestHealthData, error: ingestHealthError },
     { data: transferReceipts },
     { data: localHistory },
+    { data: participantChanges, error: participantChangesError },
   ] = await Promise.all([
     supabase.from("events").select("*").eq("id", id).maybeSingle(),
     supabase.from("event_results").select("event_id,participant_id,bib,chip,first_name,last_name,sex,category,team,start_at,start_origin,finish_at,finish_origin,result_status,elapsed_seconds,overall_place,category_place,distance").eq("event_id", id).order("bib", { ascending: true, nullsFirst: false }).range(0, 4999),
     supabase.from("timing_entries").select("participant_id,stage,captured_at,origin").eq("event_id", id).range(0, 9999),
     supabase.from("timing_entry_audit").select("id,participant_id,stage,action,reason,created_at").eq("event_id", id).order("created_at", { ascending: false }).limit(30),
     supabase.from("event_distances").select("distance,official_start_at,started_at,exclude_general_top3_from_categories,award_policy_configured").eq("event_id", id).order("distance"),
-    supabase.from("event_participants").select("id,bib,chip,first_name,last_name,sex,rut,distance,age,age_bracket,category,team").eq("event_id", id).order("bib", { ascending: true, nullsFirst: false }).range(0, 4999),
+    supabase.from("event_participants").select("id,bib,chip,first_name,last_name,sex,rut,distance,age,age_bracket,category,team,dnf_at").eq("event_id", id).order("bib", { ascending: true, nullsFirst: false }).range(0, 4999),
     supabase.from("event_roster_revisions").select("revision_no,source_name,added_count,updated_count,unchanged_count,skipped_count,issue_count,created_at").eq("event_id", id).order("revision_no", { ascending: false }).limit(10),
     supabase.from("event_participants").select("distance,category").eq("event_id", id).not("distance", "is", null),
     supabase.rpc("get_event_ingest_health", { p_event_id: id }),
     supabase.from("event_transfer_receipts").select("transfer_id,local_revision,payload_hash,publication_state,received_at,verified_at,published_at").eq("event_id", id).order("local_revision", { ascending: false }).limit(10),
     supabase.from("local_operation_history").select("operation_id,action,entity_id,occurred_at,details").eq("event_id", id).order("occurred_at", { ascending: false }).limit(100),
+    supabase.from("participant_change_audit").select("id,participant_id,action,reason,before_values,after_values,timing_snapshot,timing_audit_snapshot,created_at").eq("event_id", id).order("created_at", { ascending: false }).limit(50),
   ]);
   if (!event) notFound();
+  const operatorToolsDisabled = Boolean(participantChangesError) || event.local_operation_status === "prepared" || event.local_operation_status === "active";
+  const categoryCatalog = buildCategoryCatalog(participantRoster ?? []);
   const awardPoliciesReady = Boolean(distances?.length) && distances!.every((distance) => distance.award_policy_configured);
   const people = results ?? [];
   const resultsByParticipantId = new Map(people.map((person) => [person.participant_id, person]));
@@ -205,7 +213,7 @@ export default async function EventPage({
       elapsed_seconds: result?.elapsed_seconds ?? calculatedElapsed,
       overall_place: result?.overall_place ?? null,
       category_place: result?.category_place ?? null,
-      result_status: result?.result_status ?? (startAt && finishAt ? "FINALIZÓ" : finishAt ? "LLEGADA SIN SALIDA" : startAt ? "EN CARRERA" : "SIN DATOS"),
+      result_status: result?.result_status ?? (person.dnf_at && !finishAt ? "DNF" : startAt && finishAt ? "FINALIZÓ" : finishAt ? "LLEGADA SIN SALIDA" : startAt ? "EN CARRERA" : "SIN DATOS"),
     };
   });
   const missingResultRows = rosterPeople.filter((person) => !resultsByParticipantId.has(person.participant_id)).length;
@@ -281,6 +289,7 @@ export default async function EventPage({
     </p>}
     <AdminEventTabs eventId={id} />
     {notice.ok && <p className="notice">{notice.ok}</p>}{notice.error && <p className="notice error">{notice.error}</p>}
+    {participantChangesError && <p className="notice" role="status">Las herramientas de edición, baja, DNF individual y planilla manual requieren la migración de herramientas del operador. Estarán deshabilitadas hasta que se aplique y su historial pueda consultarse.</p>}
     {(resultsError || timingEntriesError || distancesError || participantRosterError || missingResultRows > 0) && <p className="notice error" role="status">
       {participantRosterError
         ? "No se pudo consultar la nómina guardada; el conteo y los resultados pueden estar incompletos."
@@ -340,6 +349,7 @@ export default async function EventPage({
     <section className="panel" id="resultados">
       <div className="panel-heading panel-heading-dnf">
         <div><p className="eyebrow">CLASIFICACIÓN · SALIDA → LLEGADA</p><h2>Resultados del evento</h2></div>
+        <a href={"/admin/events/" + id + "/podiums"} className="button button-quiet button-small">Descargar todos los podios PDF</a>
         <div className="bulk-dnf-tools">
           <span className="muted">{completed.length} tiempos completos · {resultsError ? "DNF no disponible" : `${dnfCount.length} DNF`}</span>
           {resultsError || participantRosterError || timingEntriesError || missingResultRows > 0 ? <span className="notice error">No se puede validar el estado DNF porque falló o no coincide una consulta de resultados.</span>
@@ -477,6 +487,9 @@ export default async function EventPage({
           <button className="button button-dark button-small" disabled={!rosterPeople.length}>Guardar llegada manual</button>
         </form>
         <p className="setting-caption">Ingresa el tiempo transcurrido desde la salida; el sistema calcula la hora de llegada automáticamente. Admite HH:MM:SS o MM:SS, opcionalmente con centésimas o milésimas. Si ya tenía llegada, conserva la marca anterior en el historial.</p>
+        <div className="correction-import-block"><ManualFinishesGrid eventId={id} timeZone={event.timezone} disabled={operatorToolsDisabled || Boolean(resultsError || participantRosterError || timingEntriesError) || missingResultRows > 0}
+          savedToken={notice.batch_saved ?? null}
+          participants={rosterPeople.map((person) => ({ id: person.id, bib: person.bib, name: participantDisplayName(person.first_name, person.last_name), startAt: person.start_at, finishAt: person.finish_at, dnf: Boolean(person.dnf_at) }))} /></div>
         <div className="correction-import-block">
           <div><h3>Cargar rectificaciones desde CSV</h3><p>Previsualiza varias llegadas por dorsal y aplica el lote con un motivo común en el historial.</p></div>
           <FinishCorrectionsImporter eventId={id} participants={rosterPeople.map((person) => ({
@@ -497,8 +510,8 @@ export default async function EventPage({
           <label>Dorsal<input name="bib" placeholder="042" /></label><label>Chip / EPC<input name="chip" placeholder="9784" /></label><label>RUT (privado)<input name="rut" placeholder="Opcional" /></label>
           <label>Nombre<input name="first_name" placeholder="Camila" required /></label><label>Apellido<input name="last_name" placeholder="Soto" /></label>
           <label>Sexo<select name="sex" defaultValue=""><option value="">Sin informar</option><option value="F">Femenino</option><option value="M">Masculino</option><option value="otro">Otro</option></select></label>
-          <label>Distancia<input name="distance" placeholder="3KM" /></label><label>Edad<input name="age" type="number" min="0" max="120" placeholder="Opcional" /></label><label>Grupo etario<input name="age_bracket" placeholder="4 a 8 años / Cat. especial" /></label><label>Equipo<input name="team" placeholder="Club" /></label>
-          <button className="button button-dark">Añadir <span aria-hidden="true">+</span></button>
+          <ParticipantCategoryFields distances={resultDistances} catalog={categoryCatalog} disabled={operatorToolsDisabled || Boolean(participantRosterError)} /><label>Edad<input name="age" type="number" min="0" max="120" placeholder="Opcional" /></label><label>Grupo etario<input name="age_bracket" placeholder="4 a 8 años / Cat. especial" /></label><label>Equipo<input name="team" placeholder="Club" /></label>
+          <button className="button button-dark" disabled={operatorToolsDisabled || Boolean(participantRosterError)}>Añadir <span aria-hidden="true">+</span></button>
         </form> : <p className="notice">Configura la política de podios por distancia antes de ingresar corredores.</p>}
       </div>
       <div className="panel-body" style={{ paddingTop: 0 }}>
@@ -512,19 +525,20 @@ export default async function EventPage({
               distances={(distances ?? []).map((distance) => distance.distance)}
             />}
       </div>
-      <div className="table-wrap"><table className="data-table"><thead><tr><th>Dorsal</th><th>Nombre</th><th>Apellidos</th><th>Chip</th><th>Edad</th><th>Categoría</th><th>Estado</th><th>Salida</th><th>Registrar / corregir salida</th><th>Llegada</th><th>Registrar / corregir llegada</th></tr></thead><tbody>
+      <div className="table-wrap"><table className="data-table"><thead><tr><th>Dorsal</th><th>Nombre</th><th>Apellidos</th><th>Chip</th><th>Edad</th><th>Categoría</th><th>Estado</th><th>Administrar corredor</th><th>Salida</th><th>Registrar / corregir salida</th><th>Llegada</th><th>Registrar / corregir llegada</th></tr></thead><tbody>
         {participantRosterError
-          ? <tr><td colSpan={11} className="muted">No se pudo leer la nómina del evento.</td></tr>
+          ? <tr><td colSpan={12} className="muted">No se pudo leer la nómina del evento.</td></tr>
           : rosterPeople.length ? rosterPeople.map((person) => <tr key={person.participant_id}>
           <td className="bib-cell">{person.bib || "—"}</td>
           <td className="person-cell"><strong>{person.first_name}</strong><small>{person.team || person.sex || " "}</small></td><td>{person.last_name || "—"}</td>
           <td>{person.chip || <span className="muted">Sin chip</span>}</td><td>{person.age ?? "—"}</td><td>{person.category || "—"}</td>
           <td><span className={"result-tag " + (person.result_status === "FINALIZÓ" ? "result-finalizó" : person.result_status === "EN CARRERA" ? "result-en-carrera" : person.result_status === "DNF" ? "result-dnf" : "")}>{person.result_status}</span></td>
+          <td><ParticipantActions eventId={id} person={{ id: person.id, bib: person.bib, chip: person.chip, first_name: person.first_name, last_name: person.last_name, sex: person.sex, rut: person.rut, distance: person.distance, age: person.age, age_bracket: person.age_bracket, category: person.category, team: person.team, dnf_at: person.dnf_at }} distances={resultDistances} categoryCatalog={categoryCatalog} hasFinish={Boolean(person.finish_at)} disabled={operatorToolsDisabled} /></td>
           <td><TimeCell value={person.start_at} origin={person.start_origin} timeZone={event.timezone} /></td>
           <td><EntryActions eventId={id} participantId={person.participant_id} stage="start" value={person.start_at} startAt={person.start_at} timeZone={event.timezone} /></td>
           <td><TimeCell value={person.finish_at} origin={person.finish_origin} timeZone={event.timezone} /></td>
           <td><EntryActions eventId={id} participantId={person.participant_id} stage="finish" value={person.finish_at} startAt={person.start_at} timeZone={event.timezone} /></td>
-        </tr>) : <tr><td colSpan={11} className="muted">Aún no hay corredores. Añade uno o carga la nómina en CSV o XLSX cuando esté lista.</td></tr>}
+        </tr>) : <tr><td colSpan={12} className="muted">Aún no hay corredores. Añade uno o carga la nómina en CSV o XLSX cuando esté lista.</td></tr>}
       </tbody></table></div>
     </section>
 
@@ -578,6 +592,24 @@ export default async function EventPage({
     <section className="panel" id="historial" data-event-tab-panel="history" hidden>
       <div className="panel-heading"><div><p className="eyebrow">TRAZABILIDAD</p><h2>Historial reciente</h2></div><span className="muted">Últimas {audit?.length ?? 0} acciones</span></div>
       <div className="panel-body audit-list">
+        {!!participantChanges?.length && <div className="participant-change-history"><h3>Cambios de nómina y DNF</h3>{participantChanges.map((change) => {
+          const before = change.before_values as Record<string, unknown>;
+          const after = change.after_values as Record<string, unknown> | null;
+          const fields: Record<string, string> = { bib: "Dorsal", first_name: "Nombre", last_name: "Apellido", chip: "Chip", sex: "Sexo", distance: "Distancia", age: "Edad", age_bracket: "Grupo etario", category: "Categoría", team: "Equipo", rut: "RUT (privado)", dnf_at: "Marcado DNF" };
+          const archivedMarks = (change.timing_snapshot ?? []) as { id: string; stage: string; captured_at: string; origin: string }[];
+          const archivedAudit = (change.timing_audit_snapshot ?? []) as { id: number; created_at: string; action: string; reason: string | null }[];
+          const labels: Record<string, string> = { updated: "Datos modificados", removed: "Corredor dado de baja", dnf_marked: "Marcado DNF", dnf_cleared: "DNF retirado" };
+          return <article key={change.id} className="participant-history-row"><strong>{labels[change.action] ?? change.action} · #{String(before.bib ?? "Sin dorsal")} · {String(before.first_name ?? "")} {String(before.last_name ?? "")}</strong>
+            <p>{formatDateTime(change.created_at, event.timezone)} · {change.reason}</p>
+            <details><summary>Ver datos y marcas conservados</summary>
+              <div className="table-wrap"><table className="data-table"><thead><tr><th>Dato</th><th>Antes</th><th>Después</th></tr></thead><tbody>
+                {Object.entries(fields).filter(([key]) => !after || before[key] !== after[key]).map(([key, label]) => <tr key={key}><td>{label}</td><td>{key === "dnf_at" ? formatDateTime(before[key] as string | null, event.timezone) : String(before[key] ?? "—")}</td><td>{!after ? "Baja de nómina" : key === "dnf_at" ? formatDateTime(after[key] as string | null, event.timezone) : String(after[key] ?? "—")}</td></tr>)}
+              </tbody></table></div>
+              {archivedMarks.length > 0 && <><h4>Marcas al dar de baja</h4>{archivedMarks.map((mark) => <p key={mark.id}>{stageLabels[mark.stage]} · {formatDateTime(mark.captured_at, event.timezone)} · {mark.origin === "manual" ? "Manual" : "RFID"}</p>)}</>}
+              {archivedAudit.length > 0 && <details><summary>Historial de marcas conservado ({archivedAudit.length})</summary>{archivedAudit.map((item) => <p key={item.id}>{formatDateTime(item.created_at, event.timezone)} · {actionLabels[item.action] ?? item.action}{item.reason ? " · " + item.reason : ""}</p>)}</details>}
+            </details>
+          </article>;
+        })}</div>}
         {audit?.length ? audit.map((entry) => <div className="audit-row" key={entry.id}>
           <i className="audit-dot" /><div><p><strong>{actionLabels[entry.action] ?? entry.action}</strong> · {participantNames.get(entry.participant_id) ?? "Corredor"} · {stageLabels[entry.stage]}</p>
           <small>{formatDateTime(entry.created_at, event.timezone)}{entry.reason ? " · " + entry.reason : ""}</small></div>

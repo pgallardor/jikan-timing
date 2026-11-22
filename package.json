@@ -8,6 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
+    "test:operator": "node --test tests/operator-tools.test.cjs",
+    "test:operator:local": "node --test tests/operator-local.integration.cjs",
     "supabase": "supabase",
     "db:new": "supabase migration new",
     "db:status": "supabase migration list --linked",

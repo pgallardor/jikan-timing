@@ -1,0 +1,336 @@
+// Runs against loopback Supabase + a compiled local Next.js server only.
+// Creates disposable accounts/events and removes only those UUIDs in cleanup.
+const { test } = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const { randomUUID, createHash } = require("node:crypto");
+const { execFileSync } = require("node:child_process");
+const { createClient } = require("@supabase/supabase-js");
+const { createServerClient } = require("@supabase/ssr");
+const ts = require("typescript");
+require.extensions[".ts"] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, "utf8"), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true },
+}).outputText, filename);
+const { prepareManualFinishes } = require("../lib/manual-finishes.ts");
+const { buildPodiumGroups } = require("../lib/podium-export.ts");
+
+const env = Object.fromEntries(fs.readFileSync(path.join(__dirname, "../.env.local"), "utf8").split(/\r?\n/).filter((line) => /^[A-Z_]+=/.test(line)).map((line) => {
+  const i = line.indexOf("="); return [line.slice(0, i), line.slice(i + 1).trim().replace(/^['"]|['"]$/g, "")];
+}));
+const url = env.NEXT_PUBLIC_SUPABASE_URL;
+const key = env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+const appUrl = process.env.OPERATOR_LOCAL_APP_URL || "http://127.0.0.1:3100";
+for (const target of [url, appUrl]) {
+  const parsed = new URL(target);
+  assert.ok(["127.0.0.1", "localhost", "[::1]"].includes(parsed.hostname), "Integration tests must never target a remote host");
+}
+assert.equal(new URL(url).port, "54321", "Use this project's local Supabase instance");
+const output = path.join(__dirname, "../local-backups/operator-qa");
+fs.mkdirSync(output, { recursive: true });
+const report = { startedAt: new Date().toISOString(), targets: { supabase: url, web: appUrl }, checks: [] };
+const fields = ["bib", "chip", "first_name", "last_name", "sex", "rut", "distance", "age", "age_bracket", "category", "team", "dnf_at"];
+const expected = (p) => Object.fromEntries(fields.map((field) => [field, p[field]]));
+const valueFields = (p) => Object.fromEntries(fields.filter((field) => field !== "dnf_at").map((field) => [field, p[field]]));
+const sql = (text) => execFileSync("docker", ["exec", "supabase_db_crono-local", "psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres", "-At", "-c", text], { encoding: "utf8", windowsHide: true }).trim();
+const unwrap = (result) => { assert.equal(result.error, null, result.error?.message); return result.data; };
+const actionIds = new Map();
+for (const filename of fs.readdirSync(path.join(__dirname, "../.next/static/chunks/app/admin/events/[id]"))) {
+  if (!filename.endsWith(".js")) continue;
+  const source = fs.readFileSync(path.join(__dirname, "../.next/static/chunks/app/admin/events/[id]", filename), "utf8");
+  for (const match of source.matchAll(/createServerReference\)\("([a-f0-9]+)",[^)]*?"(\w+)"\)/g)) actionIds.set(match[2], match[1]);
+}
+
+test("local operator integration", { timeout: 300_000 }, async (t) => {
+  const accounts = [];
+  const baseline = sql("select (select count(*) from public.events) || ':' || (select count(*) from public.event_participants)");
+  async function account() {
+    const jar = new Map();
+    const client = createServerClient(url, key, { cookies: {
+      getAll: () => [...jar].map(([name, value]) => ({ name, value })),
+      setAll: (cookies) => cookies.forEach(({ name, value }) => jar.set(name, value)),
+    }, auth: { autoRefreshToken: false } });
+    const data = unwrap(await client.auth.signUp({ email: `qa-${randomUUID()}@example.test`, password: randomUUID() + "aA1!" }));
+    assert.ok(data.session, "Local test account must have a confirmed session");
+    accounts.push(data.user.id);
+    return { client, id: data.user.id, cookie: () => [...jar].map(([name, value]) => `${name}=${value}`).join("; ") };
+  }
+  t.after(() => {
+    // UUIDs come only from accounts created in this run; no existing user is selected.
+    for (const id of accounts) assert.match(id, /^[0-9a-f-]{36}$/);
+    if (accounts.length) sql(`do $$ declare e record; begin for e in select id from public.events where owner_id in (${accounts.map((id) => `'${id}'::uuid`).join(",")}) loop perform set_config('app.d07_transfer_event_id',e.id::text,true); delete from public.events where id=e.id; end loop; delete from auth.users where id in (${accounts.map((id) => `'${id}'::uuid`).join(",")}); end $$;`);
+    report.cleanedUp = true;
+    report.finishedAt = new Date().toISOString();
+    report.baselineRestored = sql("select (select count(*) from public.events) || ':' || (select count(*) from public.event_participants)") === baseline;
+    fs.writeFileSync(path.join(output, "report.json"), JSON.stringify(report, null, 2));
+    assert.ok(report.baselineRestored, "Existing local event/participant counts must be unchanged");
+  });
+  async function check(name, callback) {
+    await t.test(name, async () => {
+      const start = performance.now();
+      try { await callback(); report.checks.push({ name, passed: true, milliseconds: Math.round(performance.now() - start) }); }
+      catch (error) { report.checks.push({ name, passed: false, error: error.message }); throw error; }
+    });
+  }
+  const owner = await account();
+  const outsider = await account();
+  const anon = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+  const slug = "qa-tools-" + randomUUID();
+  const event = unwrap(await owner.client.from("events").insert({ owner_id: owner.id, name: "QA local · Carrera Ñuble", slug, event_date: "2026-11-22", timezone: "America/Santiago", status: "open" }).select().single());
+  unwrap(await owner.client.from("event_distances").insert(["10KM", "5KM"].map((distance) => ({ event_id: event.id, distance, award_policy_configured: true, exclude_general_top3_from_categories: distance === "10KM" }))));
+  const bibs = ["001", "002", "003", "004", "005", "006", "101", "102", "103", "104", "201", "202", "203", "204", "205", "206"];
+  const people = bibs.map((bib) => {
+    const female = bib.startsWith("1") || ["202", "203"].includes(bib);
+    const bracket = female ? "20 a 29 años" : "30 a 39 años";
+    const distance = female ? "5KM" : "10KM";
+    return { participant_id: null, bib, chip: "QA" + slug.slice(-8).replace(/-/g, "") + bib, first_name: "José", last_name: "Muñoz " + bib, sex: female ? "F" : "M", rut: null, age: female ? 25 : 35, age_bracket: bracket, category: `${distance} ${female ? "Damas" : "Varones"} · ${bracket}`, distance, team: "Club Ñuble" };
+  });
+  unwrap(await owner.client.rpc("import_event_roster", {
+    p_event_id: event.id, p_rows: people.map((p, i) => ({ source_row: i + 1, source_sheet: null, source_values: Object.values(p).map((v) => v === null ? "" : String(v)), mapped_fields: fields.filter((f) => f !== "dnf_at"), expected_values: {}, participant: p, operation: "add", issues: [] })),
+    p_source_name: "QA local desechable", p_source_kind: "manual", p_source_sha256: createHash("sha256").update(slug).digest("hex"), p_mapping: {},
+  }));
+  const participant = async (bib) => unwrap(await owner.client.from("event_participants").select("*").eq("event_id", event.id).eq("bib", bib).single());
+  const results = async () => unwrap(await owner.client.from("event_results").select("*").eq("event_id", event.id));
+  const result = async (bib) => (await results()).find((p) => p.bib === bib);
+  const audit = async () => unwrap(await owner.client.from("timing_entry_audit").select("*").eq("event_id", event.id));
+  const changes = async () => unwrap(await owner.client.from("participant_change_audit").select("*").eq("event_id", event.id));
+  const change = (person, operation, values = valueFields(person), client = owner.client) => client.rpc("change_event_participant", { p_event_id: event.id, p_participant_id: person.id, p_action: operation, p_values: values, p_expected: expected(person), p_reason: "Prueba de integración local" });
+  for (const distance of ["10KM", "5KM"]) unwrap(await owner.client.rpc("record_distance_start_manually", { p_event_id: event.id, p_distance: distance, p_captured_at: "2026-11-22T12:00:00.125Z", p_reason: "Salida oficial para QA", p_confirm_replace: false }));
+  const noStart = await participant("203");
+  unwrap(await owner.client.rpc("void_timing_entry", { p_event_id: event.id, p_participant_id: noStart.id, p_stage: "start", p_reason: "Prueba sin salida" }));
+  async function formAction(name, values, actor = owner) {
+    if (!actionIds.has(name) && name === "addParticipantAction") {
+      const response = await fetch(`${appUrl}/admin/events/${values.event_id}`, { headers: { Cookie: actor.cookie() } });
+      assert.equal(response.status, 200);
+      const html = await response.text();
+      const addForm = html.match(/<form\b[^>]*class="participant-form"[^>]*>[\s\S]*?<\/form>/)?.[0];
+      const actionId = addForm?.match(/name="\$ACTION_ID_([a-f0-9]+)"/)?.[1];
+      assert.ok(actionId, "Add form must expose its native Server Action");
+      actionIds.set(name, actionId);
+    }
+    assert.ok(actionIds.get(name), `Missing compiled Server Action: ${name}`);
+    const form = new FormData(); form.set("$ACTION_ID_" + actionIds.get(name), "");
+    for (const [key, value] of Object.entries(values)) form.set(key, value === null ? "" : String(value));
+    const response = await fetch(`${appUrl}/admin/events/${values.event_id ?? event.id}`, { method: "POST", body: form, headers: { Cookie: actor.cookie(), Origin: appUrl }, redirect: "manual" });
+    assert.equal(response.status, 303, `Server Action should redirect, received ${response.status}`);
+    return new URL(response.headers.get("location"), appUrl);
+  }
+  async function changeForm(person, operation, values = {}, actor = owner) {
+    return formAction("changeParticipantAction", { event_id: event.id, participant_id: person.id, operation, expected: JSON.stringify(expected(person)), reason: "Revisión de planilla local", confirm_remove: "on", ...valueFields(person), ...values }, actor);
+  }
+  async function prepare(inputs) {
+    const current = await results();
+    const rows = prepareManualFinishes(inputs, current.map((p) => ({ id: p.participant_id, bib: p.bib, name: p.first_name, startAt: p.start_at, finishAt: p.finish_at, dnf: p.result_status === "DNF" })), "America/Santiago", "Control manual local");
+    rows.forEach((p) => assert.equal(p.error, null, p.error));
+    return rows.map((p) => p.prepared);
+  }
+  const elapsed = (bib, value) => ({ bib, mode: "elapsed", value, reason: "" });
+  const clock = (bib, value) => ({ bib, mode: "clock", value, reason: "Hora de video local" });
+  async function batchForm(inputs, reviewed = null) {
+    const rows = reviewed ?? await prepare(inputs);
+    return formAction("recordManualFinishesBatchAction", { event_id: event.id, reason: "Control manual local", rows: JSON.stringify(rows.map((p, i) => ({ input: inputs[i], participant_id: p.participant_id, expected_start_at: p.expected_start_at, expected_finish_at: p.expected_finish_at }))) });
+  }
+
+  await check("admin page renders authenticated roster and all operator controls", async () => {
+    const response = await fetch(`${appUrl}/admin/events/${event.id}`, { headers: { Cookie: owner.cookie() } });
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    for (const text of ["Editar", "Dar de baja", "Marcar DNF", "Planilla de llegadas manuales", "Descargar todos los podios PDF"]) assert.ok(html.includes(text), text);
+    assert.ok(!html.includes("Estarán deshabilitadas hasta"));
+    assert.ok(!html.includes("La vista de resultados no coincide"));
+  });
+  await check("category selects offer distance-specific choices and save existing/new/none without duplicates", async () => {
+    const catalogEvent = unwrap(await owner.client.from("events").insert({ owner_id: owner.id, name: "QA local · Categorías", slug: "qa-tools-" + randomUUID(), event_date: "2026-11-22", timezone: "America/Santiago" }).select().single());
+    unwrap(await owner.client.from("event_distances").insert(["10KM", "5KM"].map((distance) => ({ event_id: catalogEvent.id, distance, award_policy_configured: true }))));
+    unwrap(await owner.client.from("event_participants").insert([
+      { event_id: catalogEvent.id, bib: "C001", first_name: "Catálogo", sex: "M", distance: "10KM", category: "Élite Varones · 30 a 39 años", age_bracket: "30 a 39 años" },
+      { event_id: catalogEvent.id, bib: "C002", first_name: "Catálogo", sex: "M", distance: "5KM", category: "Juvenil Varones", age_bracket: null },
+    ]));
+    const response = await fetch(`${appUrl}/admin/events/${catalogEvent.id}`, { headers: { Cookie: owner.cookie() } });
+    assert.equal(response.status, 200);
+    const addForm = (await response.text()).match(/<form\b[^>]*class="participant-form"[^>]*>[\s\S]*?<\/form>/)?.[0];
+    assert.ok(addForm.includes('name="category_choice"'));
+    assert.ok(addForm.includes("Crear otra categoría"));
+    assert.ok(addForm.includes("Élite Varones"));
+    assert.ok(!addForm.includes("Juvenil Varones"), "The default 10KM select must exclude 5KM categories");
+    async function add(bib, choice, newCategory = "") {
+      return formAction("addParticipantAction", { event_id: catalogEvent.id, bib, first_name: "Prueba categoría", sex: "M", distance: "10KM", age_bracket: "30 a 39 años", category_choice: choice, new_category: newCategory });
+    }
+    const get = async (bib) => unwrap(await owner.client.from("event_participants").select("*").eq("event_id", catalogEvent.id).eq("bib", bib).single());
+    assert.ok((await add("C003", "existing:" + encodeURIComponent("Élite Varones"))).searchParams.has("ok"));
+    assert.equal((await get("C003")).category, "Élite Varones · 30 a 39 años");
+    assert.ok((await add("C004", "new", "Promocional")).searchParams.has("ok"));
+    assert.equal((await get("C004")).category, "Promocional Varones · 30 a 39 años");
+    assert.ok((await add("C005", "new", "  élite  ")).searchParams.has("ok"));
+    assert.equal((await get("C005")).category, "Élite Varones · 30 a 39 años");
+    assert.ok((await add("C006", "")).searchParams.has("ok"));
+    assert.equal((await get("C006")).category, "Varones · 30 a 39 años");
+    assert.match((await add("C007", "existing:" + encodeURIComponent("Juvenil Varones"))).searchParams.get("error"), /esta distancia/);
+    assert.match((await add("C008", "new", "   ")).searchParams.get("error"), /120/);
+    const person = await get("C003");
+    const updated = await formAction("changeParticipantAction", { event_id: catalogEvent.id, participant_id: person.id, operation: "update", expected: JSON.stringify(expected(person)), ...valueFields(person), category_choice: "existing:" + encodeURIComponent("Promocional Varones"), reason: "Cambio de categoría desde el select" });
+    assert.ok(updated.searchParams.has("ok"), updated.searchParams.get("error"));
+    assert.equal((await get("C003")).category, "Promocional Varones · 30 a 39 años");
+    const refreshed = await (await fetch(`${appUrl}/admin/events/${catalogEvent.id}`, { headers: { Cookie: owner.cookie() } })).text();
+    assert.ok(refreshed.includes('value="existing:Promocional%20Varones"'));
+  });
+  await check("native web form edits stable participant and creates roster revision/audit", async () => {
+    const before = await participant("001");
+    const redirect = await changeForm(before, "update", { first_name: "José María", team: "Club Ñuble corregido", category: "10KM Varones" });
+    assert.ok(redirect.searchParams.has("ok"), redirect.searchParams.get("error"));
+    const after = await participant("001");
+    assert.equal(after.id, before.id); assert.equal(after.first_name, "José María");
+    assert.ok((await changes()).some((a) => a.action === "updated" && a.before_values.first_name === "José" && a.after_values.first_name === "José María"));
+    const revisions = unwrap(await owner.client.from("event_roster_revisions").select("revision_no").eq("event_id", event.id));
+    assert.equal(revisions.length, 2);
+    assert.equal((await result("001")).start_at, "2026-11-22T12:00:00.125+00:00");
+  });
+  await check("duplicate bib/chip edits and stale roster versions fail without changes", async () => {
+    const before = await participant("001");
+    const duplicate = await changeForm(before, "update", { bib: "002" });
+    assert.match(duplicate.searchParams.get("error"), /asignado/);
+    assert.equal((await participant("001")).id, before.id);
+    const duplicateChip = await change(before, "update", { ...valueFields(before), chip: (await participant("002")).chip });
+    assert.equal(duplicateChip.error?.code, "23505");
+    unwrap(await owner.client.from("event_participants").update({ team: "Cambio concurrente" }).eq("id", before.id));
+    const stale = await change(before, "update"); assert.equal(stale.error?.code, "40001");
+    assert.equal((await participant("001")).team, "Cambio concurrente");
+  });
+  await check("individual DNF and clearing DNF work through the web form and public standing", async () => {
+    let person = await participant("201");
+    assert.ok((await changeForm(person, "dnf")).searchParams.has("ok"));
+    assert.equal((await result("201")).result_status, "DNF");
+    const standing = unwrap(await anon.rpc("get_public_event_standing", { p_event_slug: slug }));
+    assert.equal(standing.find((p) => p.bib === "201").result_status, "DNF");
+    person = await participant("201");
+    assert.ok((await changeForm(person, "clear_dnf")).searchParams.has("ok"));
+    assert.equal((await result("201")).result_status, "EN CARRERA");
+    assert.ok((await changes()).some((a) => a.action === "dnf_cleared"));
+  });
+  await check("mixed elapsed/clock batch saves via actual Server Action with millisecond precision", async () => {
+    const inputs = [elapsed("001", "10:00.250"), elapsed("002", "11:00.250"), elapsed("003", "12:00.250"), elapsed("004", "12:00.250"), elapsed("005", "14:00.250"), elapsed("006", "15:00.250"),
+      ...["101", "102", "103", "104"].map((bib, i) => clock(bib, `2026-11-22T09:${20 + i}:00.375`))];
+    const redirect = await batchForm(inputs);
+    assert.ok(redirect.searchParams.has("ok"), redirect.searchParams.get("error")); assert.ok(redirect.searchParams.get("batch_saved"));
+    const current = await results();
+    assert.equal(current.filter((p) => p.result_status === "FINALIZÓ").length, 10);
+    assert.equal(Number(current.find((p) => p.bib === "001").elapsed_seconds), 600.25);
+    assert.equal(Date.parse(current.find((p) => p.bib === "101").finish_at), Date.parse("2026-11-22T12:20:00.375Z"));
+    assert.equal((await audit()).filter((a) => a.stage === "finish" && a.reason.includes("planilla manual")).length, 10);
+  });
+  await check("podiums use live ranks, ties, both distances/sexes and age exclusion replacements", async () => {
+    const policy = unwrap(await owner.client.from("event_distances").select("*").eq("event_id", event.id));
+    const groups = buildPodiumGroups(await results(), policy);
+    assert.equal(groups.length, 6);
+    const male = groups.filter((g) => g.distance === "10KM");
+    assert.deepEqual(male.find((g) => g.type === "General").rows.map((r) => r.place), [1, 2, 3, 3]);
+    assert.deepEqual(male.find((g) => g.type === "Grupo etario").rows.map((r) => r.bib), ["005", "006"]);
+    assert.ok(groups.some((g) => g.distance === "5KM" && g.sex === "Damas"));
+  });
+  await check("PDF route downloads complete report and rejects anonymous/other-owner access", async () => {
+    const endpoint = `${appUrl}/admin/events/${event.id}/podiums`;
+    assert.equal((await fetch(endpoint)).status, 401);
+    assert.equal((await fetch(endpoint, { headers: { Cookie: outsider.cookie() } })).status, 404);
+    const response = await fetch(endpoint, { headers: { Cookie: owner.cookie() } });
+    assert.equal(response.status, 200); assert.match(response.headers.get("content-type"), /application\/pdf/);
+    assert.match(response.headers.get("content-disposition"), /attachment.*podios\.pdf/);
+    const body = Buffer.from(await response.arrayBuffer()); assert.equal(body.subarray(0, 8).toString(), "%PDF-1.4");
+    fs.writeFileSync(path.join(output, "podios-integracion.pdf"), body);
+  });
+  await check("correcting an existing finish preserves before/after values in audit", async () => {
+    const before = await result("001");
+    assert.ok((await batchForm([elapsed("001", "10:01.250")])).searchParams.has("ok"));
+    const correction = (await audit()).find((a) => a.participant_id === before.participant_id && a.stage === "finish" && a.action === "manual_corrected");
+    assert.equal(Date.parse(correction.before_entry.captured_at), Date.parse(before.finish_at));
+    assert.equal(Number((await result("001")).elapsed_seconds), 601.25);
+  });
+  await check("database batch is atomic when a later row fails optimistic concurrency", async () => {
+    const rows = await prepare([elapsed("205", "25:00"), elapsed("206", "26:00")]);
+    rows[1].expected_finish_at = "2026-11-22T12:00:01Z";
+    const beforeAudit = (await audit()).length;
+    const failure = await owner.client.rpc("record_manual_finishes_batch", { p_event_id: event.id, p_rows: rows });
+    assert.equal(failure.error?.code, "40001");
+    assert.equal((await result("205")).finish_at, null); assert.equal((await result("206")).finish_at, null);
+    assert.equal((await audit()).length, beforeAudit);
+  });
+  await check("batch rejects duplicate runners, DNF and missing starts without partial writes", async () => {
+    const [row] = await prepare([elapsed("205", "25:00")]);
+    assert.equal((await owner.client.rpc("record_manual_finishes_batch", { p_event_id: event.id, p_rows: [row, row] })).error?.code, "22023");
+    const dnf = await participant("201"); unwrap(await change(dnf, "dnf"));
+    const dnfResult = await result("201");
+    const crafted = { ...row, bib: "201", participant_id: dnf.id, expected_start_at: dnfResult.start_at, expected_finish_at: null };
+    assert.equal((await owner.client.rpc("record_manual_finishes_batch", { p_event_id: event.id, p_rows: [crafted] })).error?.code, "22023");
+    const missing = { ...row, bib: "203", participant_id: noStart.id, expected_start_at: null };
+    assert.equal((await owner.client.rpc("record_manual_finishes_batch", { p_event_id: event.id, p_rows: [missing] })).error?.code, "40001");
+    assert.equal((await result("205")).finish_at, null);
+    assert.equal((await change(await participant("001"), "dnf")).error?.code, "22023");
+  });
+  await check("web action rejects a changed start and supports next-day clock input", async () => {
+    const inputs = [elapsed("204", "30:00")]; const rows = await prepare(inputs);
+    unwrap(await owner.client.rpc("record_manual_entry", { p_event_id: event.id, p_participant_id: rows[0].participant_id, p_stage: "start", p_captured_at: "2026-11-22T12:00:01.125Z", p_reason: "Cambio concurrente de salida" }));
+    const stale = await batchForm(inputs, rows); assert.match(stale.searchParams.get("error"), /cambiaron/);
+    assert.equal((await result("204")).finish_at, null);
+    const nextDay = await batchForm([clock("205", "2026-11-23T00:10:00.500")]);
+    assert.ok(nextDay.searchParams.has("ok"), nextDay.searchParams.get("error"));
+    assert.equal(Date.parse((await result("205")).finish_at), Date.parse("2026-11-23T03:10:00.500Z"));
+  });
+  await check("withdrawal removes active runner/results and preserves marks/history/roster provenance", async () => {
+    const person = await participant("202");
+    unwrap(await owner.client.rpc("record_manual_entry", { p_event_id: event.id, p_participant_id: person.id, p_stage: "finish", p_captured_at: "2026-11-22T12:40:00Z", p_reason: "Llegada previa a baja QA" }));
+    assert.ok((await changeForm(person, "remove")).searchParams.has("ok"));
+    assert.equal(unwrap(await owner.client.from("event_participants").select("id").eq("id", person.id)).length, 0);
+    assert.ok(!(await results()).some((p) => p.participant_id === person.id));
+    const archived = (await changes()).find((a) => a.action === "removed" && a.participant_id === person.id);
+    assert.equal(archived.before_values.bib, "202"); assert.equal(archived.timing_snapshot.length, 2); assert.ok(archived.timing_audit_snapshot.length >= 2);
+    const revision = unwrap(await owner.client.from("event_roster_revision_rows").select("participant_id,after_values").eq("event_id", event.id)).find((r) => r.after_values?.bib === "202");
+    assert.ok(revision); assert.equal(revision.participant_id, null); assert.equal(revision.after_values.id, person.id);
+    const publicRows = unwrap(await anon.rpc("get_public_event_standing", { p_event_slug: slug }));
+    assert.ok(!publicRows.some((p) => p.bib === "202"));
+  });
+  await check("RLS and both RPCs prevent access by another owner or anonymous callers", async () => {
+    const person = await participant("001");
+    assert.equal((await change(person, "update", valueFields(person), outsider.client)).error?.code, "42501");
+    assert.equal((await change(person, "update", valueFields(person), anon)).error?.code, "42501");
+    assert.equal(unwrap(await outsider.client.from("participant_change_audit").select("id").eq("event_id", event.id)).length, 0);
+    const row = (await prepare([elapsed("206", "26:00")]))[0];
+    assert.equal((await outsider.client.rpc("record_manual_finishes_batch", { p_event_id: event.id, p_rows: [row] })).error?.code, "42501");
+    assert.equal((await anon.rpc("record_manual_finishes_batch", { p_event_id: event.id, p_rows: [row] })).error?.code, "42501");
+    const unauth = await fetch(`${appUrl}/admin/events/${event.id}`, { redirect: "manual" }); assert.ok([303, 307].includes(unauth.status));
+  });
+  await check("5000-row web batch and paginated PDF export complete without truncation", async () => {
+    const large = unwrap(await owner.client.from("events").insert({ owner_id: owner.id, name: "QA local · 5000 llegadas", slug: "qa-tools-" + randomUUID(), timezone: "America/Santiago", event_date: "2026-11-22", status: "open" }).select().single());
+    unwrap(await owner.client.from("event_distances").insert({ event_id: large.id, distance: "10KM", award_policy_configured: true, exclude_general_top3_from_categories: true }));
+    const people = Array.from({ length: 5000 }, (_, index) => ({ id: randomUUID(), event_id: large.id, bib: "B" + String(index + 1).padStart(5, "0"), chip: "LOAD" + String(index + 1), first_name: "Prueba masiva", last_name: String(index + 1), sex: "M", distance: "10KM", category: "10KM Varones · 30 a 39 años", age_bracket: "30 a 39 años", age: 35 }));
+    for (let offset = 0; offset < people.length; offset += 500) unwrap(await owner.client.from("event_participants").insert(people.slice(offset, offset + 500)));
+    // Seed the large fixture in one statement; this test measures finish batches,
+    // not the unrelated per-participant official-start RPC and its HTTP timeout.
+    assert.match(large.id, /^[0-9a-f-]{36}$/);
+    assert.match(owner.id, /^[0-9a-f-]{36}$/);
+    sql(`insert into public.timing_entries(event_id,participant_id,stage,captured_at,origin,operator_id)
+      select event_id,id,'start','2026-11-22T12:00:00.125Z'::timestamptz,'manual','${owner.id}'::uuid
+      from public.event_participants where event_id='${large.id}'::uuid;
+      update public.event_distances set started_at='2026-11-22T12:00:00.125Z' where event_id='${large.id}'::uuid;`);
+    const start = unwrap(await owner.client.from("event_results").select("start_at").eq("event_id", large.id).limit(1).single()).start_at;
+    const rows = people.map((person, index) => ({ participant_id: person.id, expected_start_at: start, expected_finish_at: null, input: elapsed(person.bib, `${Math.floor((100 + index) / 60)}:${String((100 + index) % 60).padStart(2, "0")}.250`) }));
+    const redirect = await formAction("recordManualFinishesBatchAction", { event_id: large.id, rows: JSON.stringify(rows), reason: "Prueba masiva de 5000 llegadas" });
+    assert.ok(redirect.searchParams.has("ok"), redirect.searchParams.get("error"));
+    const count = await owner.client.from("event_results").select("participant_id", { count: "exact", head: true }).eq("event_id", large.id).eq("result_status", "FINALIZÓ");
+    unwrap(count); assert.equal(count.count, 5000);
+    const finishAudits = await owner.client.from("timing_entry_audit").select("id", { count: "exact", head: true }).eq("event_id", large.id).eq("stage", "finish");
+    unwrap(finishAudits); assert.equal(finishAudits.count, 5000);
+    const response = await fetch(`${appUrl}/admin/events/${large.id}/podiums`, { headers: { Cookie: owner.cookie() } });
+    assert.equal(response.status, 200);
+    const pdf = Buffer.from(await response.arrayBuffer());
+    const source = pdf.toString("latin1");
+    for (const bib of ["B00001", "B00002", "B00003", "B00004", "B00005", "B00006"]) assert.ok(source.includes(Buffer.from(bib).toString("hex")), `Missing podium winner ${bib}`);
+    fs.writeFileSync(path.join(output, "podios-5000-llegadas.pdf"), pdf);
+  });
+  await check("started distance and local authority guards remain effective", async () => {
+    const person = await participant("206");
+    assert.equal((await change(person, "update", { ...valueFields(person), distance: "5KM" })).error?.code, "23514");
+    const row = (await prepare([elapsed("206", "26:00")]))[0];
+    unwrap(await owner.client.from("events").update({ local_operation_status: "prepared" }).eq("id", event.id));
+    assert.equal((await change(person, "update")).error?.code, "55000");
+    assert.equal((await owner.client.rpc("record_manual_finishes_batch", { p_event_id: event.id, p_rows: [row] })).error?.code, "55000");
+  });
+});

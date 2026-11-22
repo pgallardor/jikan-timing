@@ -94,17 +94,50 @@ test("distance/sex categories do not repeat general podiums or clutter age headi
   assert.equal(groups[1].category, "");
   groups.forEach((g) => assert.deepEqual(g.rows.map((r) => r.bib), ["1", "2", "3"]));
 });
-test("general exclusion only changes age podium, with replacement winners", () => {
+test("general exclusion preserves general and promotes the next eligible age winners", () => {
   const groups = buildPodiumGroups(people, policy(true));
   assert.deepEqual(groups.find((g) => g.type === "General").rows.map((r) => r.bib), ["1", "2", "3"]);
   assert.deepEqual(groups.find((g) => g.type === "Grupo etario").rows.map((r) => r.bib), ["4", "5", "6"]);
 });
-test("real categories remain even when their winners match general, with age exclusions preserved", () => {
+test("real categories obey the distance exclusion policy for category and age podiums", () => {
   const elite = people.map((p) => ({ ...p, category: "Élite Varones · 30 a 39 años" }));
   const groups = buildPodiumGroups(elite, policy(true));
   assert.deepEqual(groups.map((g) => g.type), ["General", "Categoría", "Grupo etario"]);
-  assert.deepEqual(groups.find((g) => g.type === "Categoría").rows.map((r) => r.bib), ["1", "2", "3"]);
+  assert.deepEqual(groups.find((g) => g.type === "Categoría").rows.map((r) => r.bib), ["4", "5", "6"]);
   assert.deepEqual(groups.find((g) => g.type === "Grupo etario").rows.map((r) => r.bib), ["4", "5", "6"]);
+  const allowed = buildPodiumGroups(elite, policy(false));
+  assert.deepEqual(allowed.find((g) => g.type === "Categoría").rows.map((r) => r.bib), ["1", "2", "3"]);
+  assert.deepEqual(allowed.find((g) => g.type === "Grupo etario").rows.map((r) => r.bib), ["1", "2", "3"]);
+});
+
+test("category exclusion applies without age metadata and excludes all tied general winners", () => {
+  const elite = people.map((p) => ({ ...p, category: "Élite Varones", age_bracket: null }));
+  const groups = buildPodiumGroups(elite, policy(true));
+  assert.deepEqual(groups.map((g) => g.type), ["General", "Categoría"]);
+  assert.deepEqual(groups[1].rows.map((r) => r.bib), ["4", "5", "6"]);
+  const tied = elite.map((p, i) => ({ ...p, elapsed_seconds: [10,20,30,30,50,60][i], overall_place: [1,2,3,3,5,6][i] }));
+  const tieGroups = buildPodiumGroups(tied, policy(true));
+  assert.deepEqual(tieGroups[0].rows.map((r) => r.place), [1,2,3,3]);
+  assert.deepEqual(tieGroups[1].rows.map((r) => [r.bib,r.place]), [["5",1],["6",2]]);
+  const unconfigured = [{ ...policy(true)[0], award_policy_configured: false }];
+  assert.deepEqual(buildPodiumGroups(elite, unconfigured)[1].rows.map((r) => r.bib), ["1","2","3"]);
+});
+
+test("age encoded only in category labels still excludes general and promotes remaining finishers", () => {
+  const rows = [
+    candidate("200",5400,{ sex:"F",category:"Damas · 30 a 39 años",age_bracket:null,overall_place:1 }),
+    candidate("201",7200,{ sex:"F",category:"Damas · 30 a 39 años",age_bracket:null,overall_place:2 }),
+    candidate("210",7270,{ sex:"F",category:"Damas · 50 a 59 años",age_bracket:null,overall_place:3 }),
+    candidate("211",7272,{ sex:"F",category:"Damas · 50 a 59 años",age_bracket:null,overall_place:4 }),
+    candidate("212",7275,{ sex:"F",category:"Damas · 50 a 59 años",age_bracket:null,overall_place:5 }),
+  ];
+  const groups = buildPodiumGroups(rows,policy(true));
+  assert.deepEqual(groups.map((g) => g.type),["General","Grupo etario"]);
+  assert.deepEqual(groups[0].rows.map((r) => r.bib),["200","201","210"]);
+  assert.equal(groups[1].ageBracket,"50 a 59 años");
+  assert.deepEqual(groups[1].rows.map((r) => [r.bib,r.place]),[["211",1],["212",2]]);
+  const legacyHyphen = rows.map((p) => ({ ...p, category:p.category.replace(" a ","-"),age_bracket:null }));
+  assert.deepEqual(buildPodiumGroups(legacyHyphen,policy(true))[1].rows.map((r) => r.bib),["211","212"]);
 });
 
 test("general aliases merge age groups but distinct distances and category names stay distinct", () => {

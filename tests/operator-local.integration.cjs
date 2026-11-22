@@ -228,6 +228,34 @@ test("local operator integration", { timeout: 300_000 }, async (t) => {
     assert.deepEqual(male.find((g) => g.type === "Grupo etario").rows.map((r) => r.bib), ["005", "006"]);
     assert.ok(groups.some((g) => g.distance === "5KM" && g.sex === "Damas"));
   });
+  await check("general exclusion works for age labels without metadata in SQL, public standings and PDF", async () => {
+    const target = unwrap(await owner.client.from("events").insert({ owner_id:owner.id,name:"QA local · Exclusión de categorías",slug:"qa-tools-"+randomUUID(),event_date:"2026-11-22",timezone:"America/Santiago",status:"open" }).select().single());
+    unwrap(await owner.client.from("event_distances").insert({ event_id:target.id,distance:"10KM",award_policy_configured:true,exclude_general_top3_from_categories:true }));
+    const inputs = [["200",5400,"30 a 39 años"],["201",7200,"30 a 39 años"],["210",7270,"50 a 59 años"],["211",7272,"50 a 59 años"],["212",7275,"50 a 59 años"]];
+    const roster = unwrap(await owner.client.from("event_participants").insert(inputs.map(([bib,,bracket]) => ({ event_id:target.id,bib,chip:"QA"+bib,first_name:"Prueba",last_name:"Categoría "+bib,sex:"F",distance:"10KM",category:"Damas · "+bracket,age_bracket:null }))).select());
+    const start = "2026-11-22T12:00:00.000Z";
+    unwrap(await owner.client.rpc("record_distance_start_manually",{ p_event_id:target.id,p_distance:"10KM",p_captured_at:start,p_reason:"Prueba de exclusión",p_confirm_replace:false }));
+    for (const [bib,seconds] of inputs) unwrap(await owner.client.rpc("record_manual_entry",{ p_event_id:target.id,p_participant_id:roster.find((p) => p.bib===bib).id,p_stage:"finish",p_captured_at:new Date(Date.parse(start)+seconds*1000).toISOString(),p_reason:"Llegada de prueba de categoría" }));
+    const getResults = async () => unwrap(await owner.client.from("event_results").select("*").eq("event_id",target.id));
+    let ranked = await getResults();
+    for (const bib of ["200","201","210"]) assert.equal(ranked.find((p) => p.bib===bib).category_place,null);
+    assert.equal(Number(ranked.find((p) => p.bib==="211").category_place),1);
+    assert.equal(Number(ranked.find((p) => p.bib==="212").category_place),2);
+    const publicRows = unwrap(await anon.rpc("get_public_event_standing",{ p_event_slug:target.slug }));
+    assert.equal(publicRows.find((p) => p.bib==="210").category_place,null);
+    assert.equal(Number(publicRows.find((p) => p.bib==="211").category_place),1);
+    const pdf = Buffer.from(await (await fetch(`${appUrl}/admin/events/${target.id}/podiums`,{ headers:{ Cookie:owner.cookie() } })).arrayBuffer()).toString("latin1");
+    for (const bib of ["200","201","210"]) assert.equal(pdf.split(`<${Buffer.from(bib).toString("hex")}> Tj`).length-1,1,`General winner ${bib} repeated in category PDF`);
+    for (const bib of ["211","212"]) assert.ok(pdf.includes(`<${Buffer.from(bib).toString("hex")}> Tj`));
+    unwrap(await owner.client.from("event_distances").update({ exclude_general_top3_from_categories:false }).eq("event_id",target.id));
+    ranked=await getResults();
+    assert.equal(Number(ranked.find((p) => p.bib==="200").category_place),1);
+    assert.equal(Number(ranked.find((p) => p.bib==="210").category_place),1);
+    const allowedPublic = unwrap(await anon.rpc("get_public_event_standing",{ p_event_slug:target.slug }));
+    assert.equal(Number(allowedPublic.find((p) => p.bib==="210").category_place),1);
+    const groups=buildPodiumGroups(ranked,[{ distance:"10KM",award_policy_configured:true,exclude_general_top3_from_categories:false }]);
+    assert.ok(groups.some((g) => g.type!=="General"&&g.rows.some((r) => r.bib==="210")));
+  });
   await check("PDF route downloads complete report and rejects anonymous/other-owner access", async () => {
     const endpoint = `${appUrl}/admin/events/${event.id}/podiums`;
     assert.equal((await fetch(endpoint)).status, 401);

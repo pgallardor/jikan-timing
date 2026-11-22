@@ -17,7 +17,7 @@ export default function EventSetupForm() {
     <label>Distancias del evento<input value={distancesText} onChange={(event) => setDistancesText(event.target.value)} placeholder="3KM, 10KM, 21KM" required /></label>
     {distances.length === 0 ? <p className="setting-caption">Ingresa al menos una distancia válida.</p> : <fieldset className="distance-policy-fields">
       <legend>Política por distancia</legend>
-      <p className="setting-caption">Define antes de cargar la nómina si los tres primeros de la general por sexo se excluyen del podio etario.</p>
+      <p className="setting-caption">Define antes de cargar la nómina si los tres primeros de la general por sexo se excluyen de los podios de categoría y grupo etario.</p>
       {distances.map((distance) => <label key={distance}>{distance}
         <input type="hidden" name="distance" value={distance} />
         <select name={`distance_policy_${distance}`} defaultValue="" required>

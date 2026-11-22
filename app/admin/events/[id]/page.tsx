@@ -545,7 +545,7 @@ export default async function EventPage({
     <section className="settings-grid" id="configuracion" data-event-tab-panel="settings" hidden>
       <div className="panel"><div className="panel-heading"><div><p className="eyebrow">POLÍTICA DEL EVENTO</p><h2>Podios por distancia</h2></div></div>
         <div className="panel-body">
-          <p className="setting-caption">Elige en cada distancia si los tres primeros de la general de cada sexo participan también en el podio etario. Cada categoría etaria entrega tres puestos.</p>
+          <p className="setting-caption">Elige en cada distancia si los tres primeros de la general de cada sexo participan también en los podios de categoría y grupo etario. Con exclusión activa, esos puestos pasan a los siguientes corredores elegibles.</p>
           {(distances ?? []).map((distance) => <form action={updateDistanceAwardPolicyAction} className="settings-form distance-policy-row" key={distance.distance}>
             <input type="hidden" name="event_id" value={id} /><input type="hidden" name="distance" value={distance.distance} />
             <label>{distance.distance}<select name="exclude_general_top3_from_categories" defaultValue={distance.exclude_general_top3_from_categories ? "true" : "false"} required disabled={event.local_operation_status === "prepared" || event.local_operation_status === "active"}>

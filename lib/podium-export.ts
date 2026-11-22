@@ -1,4 +1,4 @@
-import { categoryWithGender, normalizeDistance } from "./participant-category";
+import { categoryWithGender, normalizeAgeBracket, normalizeDistance, normalizeParticipantSex } from "./participant-category";
 import { participantBaseCategory } from "./category-options";
 import { participantDisplayName } from "./format";
 
@@ -41,7 +41,7 @@ function duration(seconds: number) {
 
 // General by sex, meaningful base categories, then category + age bracket.
 // A distance/sex label such as "18KM Damas" already has its general podium.
-// The general-top-three exclusion only affects age-bracket podiums.
+// The distance policy excludes general winners from every category/age podium.
 export function buildPodiumGroups(participants: PodiumCandidate[], policies: PodiumPolicy[]): PodiumGroup[] {
   const policyByDistance = new Map(policies.map((p) => [normalizeDistance(p.distance), p]));
   const groups = new Map<string, { group: PodiumGroup; people: PodiumCandidate[] }>();
@@ -55,13 +55,18 @@ export function buildPodiumGroups(participants: PodiumCandidate[], policies: Pod
   }
   for (const person of participants) {
     if (person.result_status !== "FINALIZÓ" || person.elapsed_seconds === null || !Number.isFinite(Number(person.elapsed_seconds)) || Number(person.elapsed_seconds) < 0) continue;
-    const bracket = person.age_bracket?.trim() ?? "";
-    const baseCategory = participantBaseCategory(person.category, person.age_bracket) ?? "";
+    const recordedBracket = person.age_bracket?.trim() ?? "";
+    const bracket = normalizeAgeBracket(recordedBracket) || recordedBracket || normalizeAgeBracket(person.category ?? "") || "";
+    // Older rosters can encode the age range only in the category label.
+    const categoryForBase = !recordedBracket && bracket
+      ? categoryWithGender(person.category, normalizeParticipantSex(person.sex ?? ""), bracket)
+      : person.category;
+    const baseCategory = participantBaseCategory(categoryForBase, recordedBracket || bracket) ?? "";
     const category = isGeneralCategory(baseCategory, person.distance, person.sex) ? "" : baseCategory;
     add(person, "General");
-    if (category) add(person, "Categoría", category);
     const policy = policyByDistance.get(normalizeDistance(person.distance ?? ""));
-    const excluded = policy?.award_policy_configured && policy.exclude_general_top3_from_categories && person.overall_place != null && Number(person.overall_place) <= 3;
+    const excluded = policy?.award_policy_configured && policy.exclude_general_top3_from_categories && person.overall_place != null && Number(person.overall_place) >= 1 && Number(person.overall_place) <= 3;
+    if (category && !excluded) add(person, "Categoría", category);
     if (bracket && !excluded) add(person, "Grupo etario", category, bracket);
   }
   for (const { group, people } of groups.values()) {

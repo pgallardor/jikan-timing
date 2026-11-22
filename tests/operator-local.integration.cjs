@@ -83,7 +83,7 @@ test("local operator integration", { timeout: 300_000 }, async (t) => {
     const female = bib.startsWith("1") || ["202", "203"].includes(bib);
     const bracket = female ? "20 a 29 años" : "30 a 39 años";
     const distance = female ? "5KM" : "10KM";
-    return { participant_id: null, bib, chip: "QA" + slug.slice(-8).replace(/-/g, "") + bib, first_name: "José", last_name: "Muñoz " + bib, sex: female ? "F" : "M", rut: null, age: female ? 25 : 35, age_bracket: bracket, category: `${distance} ${female ? "Damas" : "Varones"} · ${bracket}`, distance, team: "Club Ñuble" };
+    return { participant_id: null, bib, chip: "QA" + slug.slice(-8).replace(/-/g, "") + bib, first_name: "José", last_name: "Muñoz " + bib, sex: female ? "F" : "M", rut: null, age: female ? 25 : 35, age_bracket: bracket, category: `${distance} ${female ? "Damas" : "Varones"} · ${bracket}`, distance, team: bib === "005" ? "12.345.678-5" : "Club Ñuble" };
   });
   unwrap(await owner.client.rpc("import_event_roster", {
     p_event_id: event.id, p_rows: people.map((p, i) => ({ source_row: i + 1, source_sheet: null, source_values: Object.values(p).map((v) => v === null ? "" : String(v)), mapped_fields: fields.filter((f) => f !== "dnf_at"), expected_values: {}, participant: p, operation: "add", issues: [] })),
@@ -221,7 +221,8 @@ test("local operator integration", { timeout: 300_000 }, async (t) => {
   await check("podiums use live ranks, ties, both distances/sexes and age exclusion replacements", async () => {
     const policy = unwrap(await owner.client.from("event_distances").select("*").eq("event_id", event.id));
     const groups = buildPodiumGroups(await results(), policy);
-    assert.equal(groups.length, 6);
+    assert.equal(groups.length, 4);
+    assert.ok(groups.every((group) => group.type !== "Categoría"));
     const male = groups.filter((g) => g.distance === "10KM");
     assert.deepEqual(male.find((g) => g.type === "General").rows.map((r) => r.place), [1, 2, 3, 3]);
     assert.deepEqual(male.find((g) => g.type === "Grupo etario").rows.map((r) => r.bib), ["005", "006"]);
@@ -235,6 +236,8 @@ test("local operator integration", { timeout: 300_000 }, async (t) => {
     assert.equal(response.status, 200); assert.match(response.headers.get("content-type"), /application\/pdf/);
     assert.match(response.headers.get("content-disposition"), /attachment.*podios\.pdf/);
     const body = Buffer.from(await response.arrayBuffer()); assert.equal(body.subarray(0, 8).toString(), "%PDF-1.4");
+    assert.ok(!body.toString("latin1").includes(Buffer.from("12.345.678-5").toString("hex")), "A RUT in the team field must not leak into the PDF");
+    assert.equal((await participant("005")).team, "12.345.678-5", "Export redaction must preserve the source roster");
     fs.writeFileSync(path.join(output, "podios-integracion.pdf"), body);
   });
   await check("correcting an existing finish preserves before/after values in audit", async () => {

@@ -1,4 +1,5 @@
-import { normalizeDistance } from "./participant-category";
+import { categoryWithGender, normalizeDistance } from "./participant-category";
+import { participantBaseCategory } from "./category-options";
 import { participantDisplayName } from "./format";
 
 export type PodiumCandidate = {
@@ -13,13 +14,33 @@ const collate = (a: string, b: string) => a.localeCompare(b, "es-CL", { numeric:
 const key = (...parts: string[]) => JSON.stringify(parts.map((part) => part.trim().toLocaleUpperCase("es-CL")));
 const sexLabel = (sex: string | null) => sex === "F" ? "Damas" : sex === "M" ? "Varones" : sex === "otro" ? "Otro" : "Sin informar";
 
+function isGeneralCategory(category: string, distance: string | null, sex: string | null) {
+  let base = category;
+  if (sex === "F" || sex === "M") {
+    base = (categoryWithGender(category, sex) ?? "").replace(/(?:^|\s)(?:Damas|Varones)$/, "").trim();
+  } else {
+    base = base.replace(/(^|\s)(?:otro|otra|no[_\s]informado|sin\s+informar|sin\s+sexo)(?=\s|$)/gi, " ").trim();
+  }
+  base = base.replace(/(^|\s)general(?=\s|$)/gi, " ").replace(/\s+/g, " ").trim();
+  return !base || (/^\d+(?:[.,]\d+)?\s*(?:kms?|k|metros?|m)$/i.test(base)
+    && normalizeDistance(base) === normalizeDistance(distance ?? ""));
+}
+
+function publicTeamLabel(value: string) {
+  // Some source rosters placed a RUT in the club column. Never print that ID.
+  const scrubbed = value.replace(/(?<![\p{L}\p{N}])(?:(?:rut|run)\s*:?\s*)?(?:\d{1,2}(?:\.\d{3}){2}|\d{6,8})\s*-?\s*[\dkK](?![\p{L}\p{N}])/giu, "");
+  if (scrubbed === value) return value;
+  return scrubbed.replace(/\(\s*\)|\[\s*\]/g, "").replace(/^[\s,;:|/·—–'"-]+|[\s,;:|/·—–'"-]+$/g, "").replace(/\s+/g, " ").trim();
+}
+
 function duration(seconds: number) {
   const ms = Math.round(seconds * 1000);
   const whole = Math.floor(ms / 1000);
   return [Math.floor(whole / 3600), Math.floor(whole / 60) % 60, whole % 60].map((p) => String(p).padStart(2, "0")).join(":") + "." + String(ms % 1000).padStart(3, "0");
 }
 
-// Mirrors RFID Local Race: general by sex, base category, then category + age bracket.
+// General by sex, meaningful base categories, then category + age bracket.
+// A distance/sex label such as "18KM Damas" already has its general podium.
 // The general-top-three exclusion only affects age-bracket podiums.
 export function buildPodiumGroups(participants: PodiumCandidate[], policies: PodiumPolicy[]): PodiumGroup[] {
   const policyByDistance = new Map(policies.map((p) => [normalizeDistance(p.distance), p]));
@@ -35,13 +56,13 @@ export function buildPodiumGroups(participants: PodiumCandidate[], policies: Pod
   for (const person of participants) {
     if (person.result_status !== "FINALIZÓ" || person.elapsed_seconds === null || !Number.isFinite(Number(person.elapsed_seconds)) || Number(person.elapsed_seconds) < 0) continue;
     const bracket = person.age_bracket?.trim() ?? "";
-    let category = person.category?.trim() ?? "";
-    if (bracket && category.toLocaleUpperCase("es-CL").endsWith((" · " + bracket).toLocaleUpperCase("es-CL"))) category = category.slice(0, -(bracket.length + 3)).trim();
+    const baseCategory = participantBaseCategory(person.category, person.age_bracket) ?? "";
+    const category = isGeneralCategory(baseCategory, person.distance, person.sex) ? "" : baseCategory;
     add(person, "General");
     if (category) add(person, "Categoría", category);
     const policy = policyByDistance.get(normalizeDistance(person.distance ?? ""));
     const excluded = policy?.award_policy_configured && policy.exclude_general_top3_from_categories && person.overall_place != null && Number(person.overall_place) <= 3;
-    if (bracket && !excluded) add(person, "Grupo etario", category || "Sin categoría", bracket);
+    if (bracket && !excluded) add(person, "Grupo etario", category, bracket);
   }
   for (const { group, people } of groups.values()) {
     people.sort((a, b) => Number(a.elapsed_seconds) - Number(b.elapsed_seconds) || collate(a.bib ?? "", b.bib ?? ""));
@@ -51,7 +72,7 @@ export function buildPodiumGroups(participants: PodiumCandidate[], policies: Pod
       const elapsed = Number(person.elapsed_seconds);
       if (group.type === "General") place = Number(person.overall_place ?? 0);
       else if (elapsed !== previous) place = index + 1;
-      if (place >= 1 && place <= 3) group.rows.push({ place, bib: person.bib ?? "—", name: participantDisplayName(person.first_name, person.last_name), team: person.team ?? "", time: duration(elapsed) });
+      if (place >= 1 && place <= 3) group.rows.push({ place, bib: person.bib ?? "—", name: participantDisplayName(person.first_name, person.last_name), team: publicTeamLabel(person.team ?? ""), time: duration(elapsed) });
       previous = elapsed;
     });
   }
@@ -87,6 +108,15 @@ export function renderPodiumsPdf(event: { name: string; date: string; exportedAt
   const pages: string[][] = [];
   let commands: string[] = [];
   let y = 0;
+  let contentTop = 0;
+  const bottom = 42;
+  const headingLines = (group: PodiumGroup, continued = false) => wrap([group.distance, group.type, group.sex, group.category, group.ageBracket, continued ? "continuación" : ""].filter(Boolean).join(" · "), 756, 11);
+  const headingHeight = (lines: string[]) => lines.length * 15 + 37;
+  const rowLayout = (row: PodiumRow) => {
+    const widths = [39, 65, 390, 147, 85];
+    const lines = [String(row.place), row.bib, row.name, publicTeamLabel(row.team), row.time].map((cell, i) => wrap(cell, widths[i], 10));
+    return { lines, height: Math.max(...lines.map((cell) => cell.length)) * 13 + 10 };
+  };
   const text = (x: number, py: number, size: number, value: string, bold = false) => commands.push(`BT /${bold ? "F2" : "F1"} ${size} Tf 1 0 0 1 ${x} ${py} Tm <${hexText(value)}> Tj ET`);
   function page() {
     commands = []; pages.push(commands);
@@ -96,11 +126,11 @@ export function renderPodiumsPdf(event: { name: string; date: string; exportedAt
     text(36, metaY, 10, "Fecha: " + event.date + " · Todas las distancias");
     text(36, metaY - 17, 9, "Exportado: " + event.exportedAt);
     y = metaY - 44;
+    contentTop = y;
   }
-  function groupHeading(group: PodiumGroup, continued = false) {
-    const heading = [group.distance, group.type, group.sex, group.category, group.ageBracket, continued ? "continuación" : ""].filter(Boolean).join(" · ");
-    const lines = wrap(heading, 756, 11);
-    if (y < 100 + lines.length * 15) page();
+  function groupHeading(group: PodiumGroup, firstRowHeight: number, continued = false) {
+    const lines = headingLines(group, continued);
+    if (y - headingHeight(lines) - firstRowHeight < bottom) page();
     commands.push(`0.12 0.29 0.43 rg 36 ${y - lines.length * 15 + 1} 770 ${lines.length * 15 + 12} re f 1 1 1 rg`);
     lines.forEach((line, i) => text(43, y - i * 15, 11, line, true));
     commands.push("0 0 0 rg");
@@ -109,15 +139,17 @@ export function renderPodiumsPdf(event: { name: string; date: string; exportedAt
     y -= 19;
   }
   page();
-  if (!groups.length) text(36, y, 12, "Aún no hay podios con tiempos válidos.");
-  for (const group of groups) {
-    groupHeading(group);
-    for (const row of group.rows) {
-      const cells = [String(row.place), row.bib, row.name, row.team, row.time];
-      const widths = [39, 65, 390, 147, 85];
-      const lines = cells.map((cell, i) => wrap(cell, widths[i], 10));
-      const height = Math.max(...lines.map((l) => l.length)) * 13 + 10;
-      if (y - height < 42) { page(); groupHeading(group, true); }
+  const nonemptyGroups = groups.filter((group) => group.rows.length > 0);
+  if (!nonemptyGroups.length) text(36, y, 12, "Aún no hay podios con tiempos válidos.");
+  for (const group of nonemptyGroups) {
+    const rows = group.rows.map(rowLayout);
+    const blockHeight = headingHeight(headingLines(group)) + rows.reduce((total, row) => total + row.height, 0);
+    // Keep an entire podium together when it fits on a fresh page. Large ties
+    // may continue, but a heading always has room for its first complete row.
+    if (blockHeight <= contentTop - bottom && y - blockHeight < bottom) page();
+    groupHeading(group, rows[0].height);
+    for (const { lines, height } of rows) {
+      if (y - height < bottom) { page(); groupHeading(group, height, true); }
       lines.forEach((cellLines, i) => cellLines.forEach((line, j) => text([40, 87, 160, 560, 717][i], y - j * 13, 10, line)));
       y -= height;
       commands.push(`0.8 G 0.4 w 36 ${y + 8} m 806 ${y + 8} l S 0 G`);

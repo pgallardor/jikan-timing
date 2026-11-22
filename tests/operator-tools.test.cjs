@@ -87,18 +87,66 @@ test("Excel paste preserves leading-zero bibs, fractional commas, reasons and fu
 const candidate = (bib, time, patch = {}) => ({ participant_id: bib, bib, first_name: "José María", last_name: "Muñoz Pérez", team: "Club Ñuble", distance: "10KM", sex: "M", category: "10KM Varones · 30 a 39 años", age_bracket: "30 a 39 años", result_status: "FINALIZÓ", elapsed_seconds: time, overall_place: Number(bib), ...patch });
 const people = [candidate("1", 10), candidate("2", 20), candidate("3", 30), candidate("4", 40), candidate("5", 50), candidate("6", 60)];
 const policy = (exclude) => [{ distance: "10KM", award_policy_configured: true, exclude_general_top3_from_categories: exclude }];
-test("podiums match RFID Local Race with general, base category and age groups", () => {
+test("distance/sex categories do not repeat general podiums or clutter age headings", () => {
   const groups = buildPodiumGroups(people, policy(false));
-  assert.equal(groups.length, 3);
-  assert.deepEqual(groups.map((g) => g.type), ["General", "Categoría", "Grupo etario"]);
-  assert.equal(groups[1].category, "10KM Varones");
+  assert.equal(groups.length, 2);
+  assert.deepEqual(groups.map((g) => g.type), ["General", "Grupo etario"]);
+  assert.equal(groups[1].category, "");
   groups.forEach((g) => assert.deepEqual(g.rows.map((r) => r.bib), ["1", "2", "3"]));
 });
 test("general exclusion only changes age podium, with replacement winners", () => {
   const groups = buildPodiumGroups(people, policy(true));
+  assert.deepEqual(groups.find((g) => g.type === "General").rows.map((r) => r.bib), ["1", "2", "3"]);
+  assert.deepEqual(groups.find((g) => g.type === "Grupo etario").rows.map((r) => r.bib), ["4", "5", "6"]);
+});
+test("real categories remain even when their winners match general, with age exclusions preserved", () => {
+  const elite = people.map((p) => ({ ...p, category: "Élite Varones · 30 a 39 años" }));
+  const groups = buildPodiumGroups(elite, policy(true));
+  assert.deepEqual(groups.map((g) => g.type), ["General", "Categoría", "Grupo etario"]);
   assert.deepEqual(groups.find((g) => g.type === "Categoría").rows.map((r) => r.bib), ["1", "2", "3"]);
   assert.deepEqual(groups.find((g) => g.type === "Grupo etario").rows.map((r) => r.bib), ["4", "5", "6"]);
 });
+
+test("general aliases merge age groups but distinct distances and category names stay distinct", () => {
+  for (const category of ["10 km Masculino", "10KM", "General Varones", "Varones", "General 10KM Varones"]) {
+    assert.ok(buildPodiumGroups([candidate("1", 10, { category })], policy(false)).every((g) => g.type !== "Categoría"), category);
+  }
+  assert.equal(buildPodiumGroups([candidate("1", 10, { distance: "1.5KM", category: "15KM Varones" })], []).filter((g) => g.type === "Categoría").length, 1);
+  assert.equal(buildPodiumGroups([candidate("1", 10, { category: "10KM Élite Varones" })], []).filter((g) => g.type === "Categoría").length, 1);
+  const mixed = buildPodiumGroups([candidate("1", 10), candidate("2", 20, { category: "10 km Varones · 30 a 39 años" })], policy(false));
+  assert.equal(mixed.filter((g) => g.type === "Grupo etario").length, 1);
+});
+
+test("RUT-like IDs are removed from team exports while club names and years remain", () => {
+  for (const team of ["12.345.678-5", "123456785", "12345678-K", "RUT: 12.345.678-5"]) {
+    const groups = buildPodiumGroups([candidate("1", 10, { team })], policy(false));
+    assert.ok(groups.every((g) => g.rows[0].team === ""), team);
+  }
+  assert.equal(buildPodiumGroups([candidate("1", 10, { team: "Club Ñuble (RUT: 12.345.678-5)" })], [])[0].rows[0].team, "Club Ñuble");
+  for (const team of ["Club 2026", "Team123456789", "Ñuble Runners", "'-"]) assert.equal(buildPodiumGroups([candidate("1", 10, { team })], [])[0].rows[0].team, team);
+  const groups = [{ distance: "10KM", type: "General", sex: "Varones", category: "", ageBracket: "", rows: [{ place: 1, bib: "1", name: "Corredor", team: "12.345.678-5", time: "00:10:00.000" }] }];
+  const pdf = Buffer.from(renderPodiumsPdf({ name: "Privacidad", date: "Hoy", exportedAt: "Hoy" }, groups)).toString("latin1");
+  assert.ok(!pdf.includes(Buffer.from("12.345.678-5").toString("hex")));
+});
+
+test("PDF keeps small podiums whole and every continuation heading has participant rows", () => {
+  const groups = Array.from({ length: 35 }, (_, i) => ({
+    distance: "10KM", type: "Grupo etario", sex: "Varones", category: `Serie ${i}`, ageBracket: "30 a 39 años",
+    rows: Array.from({ length: i === 15 ? 30 : i % 4 + 1 }, (_, j) => ({ place: j + 1, bib: `${i}-${j}`, name: `Runner-${i}-${j}`, team: i % 3 ? "Club" : "Equipo con un nombre largo que necesita varias líneas dentro de la columna de equipo", time: "00:10:00.000" })),
+  }));
+  const pdf = Buffer.from(renderPodiumsPdf({ name: "Paginación", date: "Hoy", exportedAt: "Hoy" }, groups)).toString("latin1");
+  const pages = [...pdf.matchAll(/stream\n([\s\S]*?)\nendstream/g)].map((match) => [...match[1].matchAll(/Tm <([a-f0-9]+)> Tj/g)].map((text) => Buffer.from(text[1], "hex").toString("latin1")));
+  for (const texts of pages) {
+    const headings = texts.flatMap((text, i) => text.startsWith("10KM · Grupo etario") ? [i] : []);
+    headings.forEach((start, i) => assert.ok(texts.slice(start + 1, headings[i + 1] ?? texts.length).some((text) => text.startsWith("Runner-")), "Orphan podium heading"));
+  }
+  groups.forEach((group, i) => {
+    const rowPages = pages.flatMap((texts, page) => texts.some((text) => text.startsWith(`Runner-${i}-`)) ? [page] : []);
+    assert.ok(i === 15 ? rowPages.length > 1 : rowPages.length === 1, `Unexpected split for small podium ${i}`);
+    group.rows.forEach((row) => assert.equal(pages.flat().filter((text) => text === row.name).length, 1));
+  });
+});
+
 test("podiums preserve rank ties including multiple people in third place", () => {
   const tied = people.map((p, i) => ({ ...p, elapsed_seconds: [10, 20, 30, 30, 50, 60][i], overall_place: [1, 2, 3, 3, 5, 6][i] }));
   buildPodiumGroups(tied, policy(false)).forEach((g) => assert.deepEqual(g.rows.map((r) => r.place), [1, 2, 3, 3]));

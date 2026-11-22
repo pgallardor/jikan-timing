@@ -1,6 +1,6 @@
 # Crono · cronometraje local
 
-App Router de Next.js y Supabase local para llevar eventos de carrera, nóminas, marcas, resultados y enlaces QR. Los datos viven en el Postgres local; no se necesita un proyecto alojado.
+App Router de Next.js y Supabase local para llevar eventos de carrera, nóminas, marcas, resultados y un QR por evento. Los datos viven en el Postgres local; no se necesita un proyecto alojado.
 
 ## Arranque local
 
@@ -22,13 +22,13 @@ Inicia la función de ingestión en otra terminal cuando quieras conectar o envi
 ## Lo que incluye esta primera versión
 
 - Autenticación por correo y contraseña. RLS aísla los eventos del usuario que los crea.
-- Eventos independientes con zona horaria, estado y opciones de privacidad del QR. El umbral RSSI se configura y aplica localmente en RFIDTiming.
+- Eventos independientes con zona horaria, estado y opciones de privacidad del standing público. El umbral RSSI se configura y aplica localmente en RFIDTiming.
 - Nómina editable y carga CSV con coma o punto y coma. La plantilla está en public/nomina-plantilla.csv; columnas: dorsal, chip, nombre, apellido, sexo, categoría y equipo. La importación valida los duplicados de dorsal y chip y aplica el lote en una transacción.
 - Salida/llegada manuales con hora local del evento, motivo obligatorio y anulación/corrección auditable.
 - Cálculo de estados SIN CHIP, SIN SALIDA, EN CARRERA, DNF y FINALIZÓ; el organizador puede marcar en lote como DNF a todos los participantes sin llegada. Puestos general/categoría y empates con la misma posición.
-- Standing público por evento en `/e/<slug>` y página móvil por QR individual, ambos consultables sin cuenta y actualizados automáticamente. Los resultados están visibles durante la carrera y después del cierre; el estado `Publicado` no habilita ni bloquea la consulta.
+- Standing público por evento en `/e/<slug>`, consultable sin cuenta. El QR del evento apunta a ese enlace y puede imprimirse desde administración. Supabase conserva por evento un snapshot de puestos general/categoría y lo invalida cuando cambian marcas, nómina o políticas de podio; Next.js reutiliza las consultas públicas durante 60 segundos. El botón **Actualizar** expira la consulta pública del evento antes de volver a cargarla; no hay refresco automático. Los resultados están visibles durante la carrera y después del cierre; el estado `Publicado` no habilita ni bloquea la consulta.
 - Buscador del standing por nombre o apellido, dorsal o categoría; ignora mayúsculas y tildes.
-- QR aleatorio por participante, revocable/regenerable e impresión de QRs por lote. Por defecto se muestra el nombre y apellido, dorsal y categoría; el administrador puede ocultar cada dato tanto en el standing como en el QR. No se exponen RUT, chip/EPC, correo ni credenciales.
+- Un único QR por evento para abrir el standing público. Por defecto se muestra el nombre y apellido, dorsal y categoría en el standing; el administrador puede ocultar cada dato. No se exponen RUT, chip/EPC, correo ni credenciales.
 - RFIDTiming inicia sesión con la cuenta que administra el evento. La plataforma comprueba que el usuario sea propietario y registra internamente el UUID del lector al recibir su primera lectura; no requiere alta manual del dispositivo en la web.
 - Edge Function ingest: comprueba la sesión y la propiedad del evento, valida el payload y usa reading_id idempotente. La plataforma no vuelve a aplicar un umbral RSSI. Entre marcas RFID de la misma etapa se conserva la de menor captured_at; el orden de llegada HTTP no decide el tiempo. Una corrección manual queda como marca vigente hasta que el operador la anule.
 - Exportación de resultados a CSV.
@@ -54,6 +54,8 @@ La respuesta contiene accepted, duplicate, later_than_current, manual_override, 
 ## Alcance y siguientes decisiones
 
 RFIDTiming integra el envío con outbox durable, aplica localmente el umbral RSSI y usa la sesión renovable del usuario propietario del evento para autorizar al lector. RFIDLocal conserva sus propias plantillas de mapeo de nómina y su flujo local; esta actualización no cambia esa lógica. La plataforma todavía no incluye colaboración multiusuario por evento, duplicación de eventos ni cargas masivas de correcciones. La configuración de Auth permite alta local para facilitar el primer acceso: antes de un despliegue público, cierra el registro libre y define los permisos por evento.
+
+La matriz de capacidades y brechas entre RFID Local Race y esta app está en [`docs/HOMOLOGACION_FUNCIONAL_RFIDLOCAL_WEB.md`](../docs/HOMOLOGACION_FUNCIONAL_RFIDLOCAL_WEB.md).
 
 Para reiniciar el entorno de datos local de cero, **pnpm supabase db reset** elimina y vuelve a crear los datos locales, conservando la definición versionada en supabase/migrations.
 

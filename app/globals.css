@@ -309,7 +309,6 @@ button { cursor: pointer; }
 .row-actions button { border: 0; padding: 5px 6px; border-radius: 3px; background: #eef4e9; color: #557746; font-size: 8px; font-weight: 750; }
 .row-actions button:hover { background: #e4f0d9; }
 .row-actions .void-button { background: #faf0ed; color: #9f6353; }
-.row-actions .qr-link { background: #eef2f4; color: #527185; }
 .reason-field { width: 108px; height: 26px; padding: 0 5px; border: 1px solid #e4e8e3; border-radius: 3px; font-size: 8px; }
 .notice-cell { max-width: 100%; }
 .notice { margin: 0; padding: 11px 13px; border-radius: 4px; background: #edf8e9; color: #416c3d; font-size: 10px; }
@@ -340,13 +339,22 @@ button { cursor: pointer; }
 .public-result strong { font-size: 16px; font-weight: 700; }
 .public-time { color: #335d32; }
 .public-footer { margin-top: auto; color: #929b94; font-size: 8px; letter-spacing: .13em; }
-.qr-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; }
+.event-qr-wrap { display: flex; justify-content: center; }
 .qr-card { display: flex; flex-direction: column; align-items: center; padding: 18px 12px; border: 1px solid #e7ebe6; border-radius: 5px; text-align: center; }
-.qr-card img { width: 132px; height: 132px; object-fit: contain; }
+.event-qr-card { width: min(100%, 420px); padding: 28px; }
+.event-qr-card img { width: 240px; height: 240px; object-fit: contain; }
 .qr-placeholder { height: 132px; display: grid; place-items: center; color: #87928b; font-size: 10px; }
+.event-qr-card .qr-placeholder { width: 240px; height: 240px; }
 .qr-card strong { margin-top: 10px; font-size: 11px; }.qr-card small { margin-top: 4px; color: #8b958f; font-size: 9px; }
+.event-qr-card strong { font-size: 16px; }
+.event-qr-card small, .event-qr-card a { margin-top: 8px; }
 .qr-top-actions { display: flex; align-items: center; gap: 10px; }
-.public-refresh { border: 0; padding: 0; background: none; color: #708077; font-size: 9px; }
+.public-refresh { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; color: #708077; font-size: 9px; }
+.public-refresh button { border: 1px solid #d9e3db; border-radius: 4px; padding: 6px 10px; background: #f5f8f5; color: #244b36; font: inherit; font-size: 11px; font-weight: 750; cursor: pointer; }
+.public-refresh button:hover:not(:disabled) { background: #eaf1eb; }
+.public-refresh button:disabled { opacity: .65; cursor: wait; }
+.public-refresh span { margin: 0; color: #708077; font-size: 9px; font-weight: 500; text-transform: none; letter-spacing: 0; }
+.public-result > .public-refresh { align-items: flex-start; }
 .standing-shell > .brand { width: min(100%, 1040px); }
 .standing-card { width: min(100%, 1040px); margin: 8vh auto 35px; padding: clamp(22px, 4vw, 38px); border: 1px solid #e2e8df; border-radius: 8px; background: white; box-shadow: 0 20px 60px #2335280a; }
 .standing-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 24px; }
@@ -441,14 +449,14 @@ button { cursor: pointer; }
   .standing-count { align-self: flex-end; padding: 0; }
   .results-distance-tools { align-items: stretch; flex-direction: column; gap: 8px; padding: 0; }
   .results-distance-filter { width: 100%; }
-  .qr-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .qr-card { padding: 12px 8px; }.qr-card img { width: 110px; height: 110px; }
+  .qr-card { padding: 12px 8px; }
+  .event-qr-card img, .event-qr-card .qr-placeholder { width: min(100%, 240px); height: auto; aspect-ratio: 1; }
 }
 @media print {
   body, .app-shell, .workspace { background: white; }
   .topbar, .app-footer, .back-link, .qr-top-actions, .page-heading, .event-tabs { display: none !important; }
   .workspace { width: 100%; padding: 0; }
-  .qr-grid { grid-template-columns: repeat(4, 1fr); gap: 5mm; }
+  .event-qr-wrap { padding-top: 25mm; }
   .qr-card { break-inside: avoid; border-color: #bbb; }
 }
 
@@ -533,7 +541,6 @@ button { cursor: pointer; }
 .admin-ui .timing-cell time { font-size: 12px; }
 .admin-ui .reason-field { min-width: 130px; height: 34px; font-size: 12px; }
 .admin-ui .row-actions button,
-.admin-ui .row-actions .qr-link { padding: 7px 8px; font-size: 11px; }
 .admin-ui .roster-subheading h4 { font-size: 14px; }
 .admin-ui .roster-subheading p,
 .admin-ui .roster-message,

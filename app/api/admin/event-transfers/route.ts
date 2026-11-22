@@ -1,7 +1,8 @@
-import { revalidatePath } from "next/cache";
+import { revalidatePath, revalidateTag } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { bearerToken, createBearerClient } from "@/lib/supabase/bearer";
 import { D07_MAX_BYTES, parseTransferPackage } from "@/lib/d07-transfer";
+import { publicResultsCacheTag } from "@/lib/public-results";
 
 export const runtime = "nodejs";
 
@@ -80,7 +81,11 @@ export async function POST(request: Request) {
       const eventId = String(result.event_id ?? targetEventId ?? "");
       if (eventId) {
         revalidatePath("/admin/events/" + eventId);
-        revalidatePath("/e/" + String(result.event_slug ?? ""));
+        const eventSlug = String(result.event_slug ?? "");
+        if (eventSlug) {
+          revalidatePath("/e/" + eventSlug);
+          revalidateTag(publicResultsCacheTag(eventSlug), { expire: 0 });
+        }
       }
       revalidatePath("/admin");
     }

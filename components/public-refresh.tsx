@@ -1,22 +1,34 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { refreshPublicResultsAction } from "@/app/public-actions";
 
-export default function PublicRefresh() {
+export default function PublicRefresh({ eventSlug }: { eventSlug: string }) {
   const router = useRouter();
-  const [seconds, setSeconds] = useState(15);
-  useEffect(() => {
-    let remaining = 15;
-    const timer = window.setInterval(() => {
-      remaining -= 1;
-      if (remaining <= 0) {
-        router.refresh();
-        remaining = 15;
-      }
-      setSeconds(remaining);
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [router]);
-  return <span className="public-refresh" aria-live="off">Actualiza en {seconds} s</span>;
+  const [refreshing, setRefreshing] = useState(false);
+  const [message, setMessage] = useState("Pulsa Actualizar para consultar nuevas marcas");
+
+  async function refreshResults() {
+    if (refreshing) return;
+    setRefreshing(true);
+    setMessage("Actualizando resultados…");
+    try {
+      await refreshPublicResultsAction(eventSlug);
+      router.refresh();
+      const time = new Intl.DateTimeFormat("es-CL", { hour: "2-digit", minute: "2-digit" }).format(new Date());
+      setMessage("Consulta actualizada · " + time);
+    } catch {
+      setMessage("No se pudo actualizar. Intenta nuevamente.");
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  return <div className="public-refresh" aria-live="polite">
+    <button type="button" onClick={refreshResults} disabled={refreshing} aria-label="Actualizar resultados">
+      {refreshing ? "Actualizando…" : "Actualizar"}
+    </button>
+    <span>{message}</span>
+  </div>;
 }

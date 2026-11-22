@@ -52,7 +52,7 @@ export default async function Home() {
         <div className="hero-stats">
           <div><strong>01</strong><span>Un evento,<br />una nómina</span></div>
           <div><strong>02</strong><span>Marcas con<br />historial auditable</span></div>
-          <div><strong>03</strong><span>Resultados<br />por código QR</span></div>
+          <div><strong>03</strong><span>Un QR abre<br />cada evento</span></div>
         </div>
       </section>
       <aside className="hero-side" aria-label="Flujo de carrera">

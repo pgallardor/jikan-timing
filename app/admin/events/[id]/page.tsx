@@ -8,7 +8,6 @@ import {
   recordManualEntryAction,
   releaseLocalOperationAction,
   reprocessIngestReceiptsAction,
-  revokePublicQrAction,
   saveDistanceScheduleAction,
   startEventDistanceAction,
   updateEventStatusAction,
@@ -151,10 +150,10 @@ export default async function EventPage({
   const supabase = await createClient();
   const [{ data: event }, { data: results, error: resultsError }, { data: audit }, { data: distances }, { data: participantRoster, error: participantRosterError }, { data: rosterRevisions, error: rosterRevisionError }, { data: participantDistances }, { data: ingestHealthData, error: ingestHealthError }, { data: transferReceipts }, { data: localHistory }] = await Promise.all([
     supabase.from("events").select("*").eq("id", id).maybeSingle(),
-    supabase.from("event_results").select("*").eq("event_id", id).order("bib", { ascending: true, nullsFirst: false }).range(0, 4999),
+    supabase.from("event_results").select("event_id,participant_id,bib,chip,first_name,last_name,sex,category,team,start_at,start_origin,finish_at,finish_origin,result_status,elapsed_seconds,overall_place,category_place,distance").eq("event_id", id).order("bib", { ascending: true, nullsFirst: false }).range(0, 4999),
     supabase.from("timing_entry_audit").select("id,participant_id,stage,action,reason,created_at").eq("event_id", id).order("created_at", { ascending: false }).limit(30),
     supabase.from("event_distances").select("distance,official_start_at,started_at,exclude_general_top3_from_categories,award_policy_configured").eq("event_id", id).order("distance"),
-    supabase.from("event_participants").select("id,bib,chip,first_name,last_name,sex,rut,distance,age,age_bracket,category,team,public_token").eq("event_id", id).order("bib", { ascending: true, nullsFirst: false }).range(0, 4999),
+    supabase.from("event_participants").select("id,bib,chip,first_name,last_name,sex,rut,distance,age,age_bracket,category,team").eq("event_id", id).order("bib", { ascending: true, nullsFirst: false }).range(0, 4999),
     supabase.from("event_roster_revisions").select("revision_no,source_name,added_count,updated_count,unchanged_count,skipped_count,issue_count,created_at").eq("event_id", id).order("revision_no", { ascending: false }).limit(10),
     supabase.from("event_participants").select("distance,category").eq("event_id", id).not("distance", "is", null),
     supabase.rpc("get_event_ingest_health", { p_event_id: id }),
@@ -225,7 +224,7 @@ export default async function EventPage({
       </div>
       <div className="heading-actions">
         <Link href={"/e/" + event.slug} className="button button-quiet button-small">Ver standing público</Link>
-        <Link href={qrHref} className="button button-quiet button-small">Imprimir QRs</Link>
+        <Link href={qrHref} className="button button-quiet button-small">QR del evento</Link>
         <form action={updateEventStatusAction} className="heading-actions">
           <input type="hidden" name="event_id" value={id} />
           <select name="status" defaultValue={event.status} aria-label="Estado del evento" disabled={event.local_operation_status === "prepared" || event.local_operation_status === "active"}>
@@ -250,7 +249,7 @@ export default async function EventPage({
         <span className="muted">{event.local_operation_status === "prepared" || event.local_operation_status === "active" ? "Reserva activa" : "Descarga autenticada"}</span>
       </div>
       <div className="panel-body d07-transfer-body">
-        <p className="setting-caption">Descarga la definición, distancias, políticas compatibles, participantes e identidades QR. La preparación se valida antes de viajar y no activa recepción remota. El paquete excluye RUT, archivos fuente, recibos EPC y credenciales.</p>
+        <p className="setting-caption">Descarga la definición, distancias, políticas compatibles y participantes. La preparación se valida antes de viajar y no activa recepción remota. El paquete excluye RUT, archivos fuente, recibos EPC y credenciales.</p>
         <form method="post" action={"/admin/events/" + id + "/preparation"}>
           <button className="button button-dark button-small">Descargar preparación .yrprep</button>
         </form>
@@ -456,9 +455,9 @@ export default async function EventPage({
       {(resultsError || missingResultRows > 0) && <p className="notice" role="status" style={{ margin: "0 17px 16px" }}>
         La nómina se muestra desde los participantes guardados. No se pudieron cargar los datos de marcas para {resultsError ? "este evento" : `${missingResultRows} participante${missingResultRows === 1 ? "" : "s"}`}.
       </p>}
-      <div className="table-wrap"><table className="data-table"><thead><tr><th>Dorsal</th><th>Nombre</th><th>Apellidos</th><th>Chip</th><th>Edad</th><th>Categoría</th><th>Estado</th><th>Salida</th><th>Registrar / corregir salida</th><th>Llegada</th><th>Registrar / corregir llegada</th><th>QR</th></tr></thead><tbody>
+      <div className="table-wrap"><table className="data-table"><thead><tr><th>Dorsal</th><th>Nombre</th><th>Apellidos</th><th>Chip</th><th>Edad</th><th>Categoría</th><th>Estado</th><th>Salida</th><th>Registrar / corregir salida</th><th>Llegada</th><th>Registrar / corregir llegada</th></tr></thead><tbody>
         {participantRosterError
-          ? <tr><td colSpan={12} className="muted">No se pudo leer la nómina del evento.</td></tr>
+          ? <tr><td colSpan={11} className="muted">No se pudo leer la nómina del evento.</td></tr>
           : rosterPeople.length ? rosterPeople.map((person) => <tr key={person.participant_id}>
           <td className="bib-cell">{person.bib || "—"}</td>
           <td className="person-cell"><strong>{person.first_name}</strong><small>{person.team || person.sex || " "}</small></td><td>{person.last_name || "—"}</td>
@@ -468,14 +467,7 @@ export default async function EventPage({
           <td><EntryActions eventId={id} participantId={person.participant_id} stage="start" value={person.start_at} startAt={person.start_at} timeZone={event.timezone} /></td>
           <td><TimeCell value={person.finish_at} origin={person.finish_origin} timeZone={event.timezone} /></td>
           <td><EntryActions eventId={id} participantId={person.participant_id} stage="finish" value={person.finish_at} startAt={person.start_at} timeZone={event.timezone} /></td>
-          <td><div className="row-actions">
-            <Link className="qr-link" href={"/e/" + event.slug + "/p/" + person.public_token}>Abrir</Link>
-            <form action={revokePublicQrAction}>
-              <input type="hidden" name="event_id" value={id} /><input type="hidden" name="participant_id" value={person.participant_id} />
-              <button className="void-button">Revocar</button>
-            </form>
-          </div></td>
-        </tr>) : <tr><td colSpan={12} className="muted">Aún no hay corredores. Añade uno o carga la nómina en CSV o XLSX cuando esté lista.</td></tr>}
+        </tr>) : <tr><td colSpan={11} className="muted">Aún no hay corredores. Añade uno o carga la nómina en CSV o XLSX cuando esté lista.</td></tr>}
       </tbody></table></div>
     </section>
 
@@ -509,7 +501,7 @@ export default async function EventPage({
           <label className="check-label"><input name="qr_show_bib" type="checkbox" defaultChecked={event.qr_show_bib} /> Dorsal</label>
           <label className="check-label"><input name="qr_show_category" type="checkbox" defaultChecked={event.qr_show_category} /> Categoría</label>
           <button className="button button-quiet button-small">Guardar</button>
-          <p className="setting-caption">Se aplican al standing y al QR. Si se activa, se muestran nombre y apellidos; no se publican RUT, EPC ni correo.</p>
+          <p className="setting-caption">Se aplican a los datos del standing público. Si se activa, se muestran nombre y apellidos; no se publican RUT, EPC ni correo.</p>
         </form></div>
       </div>
       <div className="panel"><div className="panel-heading"><div><p className="eyebrow">CAPTURA RFID</p><h2>Conexión del lector</h2></div></div>
@@ -519,9 +511,9 @@ export default async function EventPage({
       </div>
       <div className="panel"><div className="panel-heading"><div><p className="eyebrow">PÁGINA DE CONSULTA</p><h2>Estado del evento</h2></div></div>
         <div className="panel-body"><span className={"status-pill status-" + event.status}><i />{statusLabels[event.status] ?? event.status}</span>
-          <p className="setting-caption" style={{ marginTop: 12 }}>El standing y los QR son públicos desde el primer momento y se actualizan al registrar o corregir marcas. Este estado controla la captura RFID del evento.</p>
+          <p className="setting-caption" style={{ marginTop: 12 }}>El standing público está disponible desde el primer momento. Durante la carrera, la persona que consulta debe pulsar Actualizar para cargar nuevas marcas. Este estado controla la captura RFID del evento.</p>
           <p className="setting-caption">Standing: <Link className="download-link" href={"/e/" + event.slug}>/e/{event.slug}</Link></p>
-          <p className="setting-caption">QR individual: <code>/e/{event.slug}/p/&lt;token&gt;</code></p>
+          <p className="setting-caption">El <Link className="download-link" href={qrHref}>QR del evento</Link> abre este standing.</p>
         </div>
       </div>
     </section>

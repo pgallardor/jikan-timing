@@ -1,10 +1,11 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
+import { revalidatePath, updateTag } from "next/cache";
 import { redirect } from "next/navigation";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
+import { publicResultsCacheTag } from "@/lib/public-results";
 import { localDateTimeToUtc, slugify } from "@/lib/format";
 import {
   buildColumns,
@@ -30,6 +31,11 @@ async function signedInClient() {
 
 function eventPath(eventId: string) {
   return "/admin/events/" + eventId;
+}
+
+async function invalidatePublicResults(supabase: Awaited<ReturnType<typeof createClient>>, eventId: string) {
+  const { data: event } = await supabase.from("events").select("slug").eq("id", eventId).maybeSingle();
+  if (event?.slug) updateTag(publicResultsCacheTag(event.slug));
 }
 
 function parseElapsedMilliseconds(value: string) {
@@ -134,6 +140,7 @@ export async function updateEventStatusAction(formData: FormData) {
   }
   const { error } = await supabase.from("events").update({ status }).eq("id", eventId);
   if (error) notice(eventPath(eventId), "error", error.message);
+  await invalidatePublicResults(supabase, eventId);
   revalidatePath(eventPath(eventId));
   revalidatePath("/admin");
   notice(eventPath(eventId), "ok", "Estado del evento actualizado.");
@@ -152,6 +159,7 @@ export async function updateDistanceAwardPolicyAction(formData: FormData) {
     award_policy_configured: true,
   }).eq("event_id", eventId).eq("distance", distance);
   if (error) notice(eventPath(eventId), "error", error.message);
+  await invalidatePublicResults(supabase, eventId);
   revalidatePath(eventPath(eventId));
   notice(eventPath(eventId), "ok", "Política de subpodio actualizada para " + distance + ".");
 }
@@ -185,6 +193,7 @@ export async function markUnfinishedParticipantsAsDnfAction(formData: FormData) 
 
   const { data, error } = await supabase.rpc("mark_unfinished_participants_as_dnf", { p_event_id: eventId });
   if (error) notice(eventPath(eventId), "error", error.message);
+  await invalidatePublicResults(supabase, eventId);
   revalidatePath(eventPath(eventId));
   revalidatePath("/e/" + event.slug);
   notice(eventPath(eventId), "ok", data
@@ -201,6 +210,7 @@ export async function updatePublicFieldsAction(formData: FormData) {
     qr_show_category: formData.get("qr_show_category") === "on",
   }).eq("id", eventId);
   if (error) notice(eventPath(eventId), "error", error.message);
+  await invalidatePublicResults(supabase, eventId);
   revalidatePath(eventPath(eventId));
   notice(eventPath(eventId), "ok", "Preferencias de privacidad guardadas.");
 }
@@ -260,6 +270,7 @@ export async function addParticipantAction(formData: FormData) {
   if (error) notice(eventPath(eventId), "error", error.message.includes("duplicate key")
     ? "Ese dorsal o chip ya está asignado en este evento."
     : error.message);
+  await invalidatePublicResults(supabase, eventId);
   revalidatePath(eventPath(eventId));
   notice(eventPath(eventId), "ok", "Corredor añadido a la nómina.");
 }
@@ -501,6 +512,7 @@ export async function importRosterAction(formData: FormData) {
         : importError.message);
   }
   if (!event) notice(eventPath(eventId), "error", "No se encontró el evento.");
+  updateTag(publicResultsCacheTag(event.slug));
   revalidatePath(eventPath(eventId));
   revalidatePath("/e/" + event.slug);
   const summary = data as { revision: number; added: number; updated: number; unchanged: number; skipped: number; issues: number };
@@ -534,6 +546,7 @@ export async function recordManualEntryAction(formData: FormData) {
     p_reason: reason,
   });
   if (error) notice(eventPath(eventId), "error", error.message);
+  updateTag(publicResultsCacheTag(event.slug));
   revalidatePath(eventPath(eventId));
   revalidatePath("/e/" + event.slug);
   notice(eventPath(eventId), "ok", "Salida manual guardada en el historial.");
@@ -575,6 +588,7 @@ export async function recordManualFinishByElapsedAction(formData: FormData) {
     p_reason: reason,
   });
   if (error) notice(eventPath(eventId), "error", error.message);
+  updateTag(publicResultsCacheTag(event.slug));
   revalidatePath(eventPath(eventId));
   revalidatePath("/e/" + event.slug);
   notice(eventPath(eventId), "ok", "Llegada manual guardada a partir del tiempo transcurrido.");
@@ -626,7 +640,10 @@ export async function importFinishCorrectionsAction(formData: FormData) {
   if (error) notice(eventPath(eventId), "error", error.message);
   const { data: event } = await supabase.from("events").select("slug").eq("id", eventId).maybeSingle();
   revalidatePath(eventPath(eventId));
-  if (event) revalidatePath("/e/" + event.slug);
+  if (event) {
+    updateTag(publicResultsCacheTag(event.slug));
+    revalidatePath("/e/" + event.slug);
+  }
   notice(eventPath(eventId), "ok", "Se aplicaron " + data + " rectificaciones de llegada y quedaron en el historial.");
 }
 
@@ -659,6 +676,7 @@ export async function recordDistanceStartManuallyAction(formData: FormData) {
     p_confirm_replace: confirmReplace,
   });
   if (error) notice(eventPath(eventId), "error", error.message);
+  updateTag(publicResultsCacheTag(event.slug));
   revalidatePath(eventPath(eventId));
   revalidatePath("/e/" + event.slug);
   notice(eventPath(eventId), "ok", "Hora real de " + distance + " guardada para " + data + " corredores.");
@@ -708,6 +726,7 @@ export async function startEventDistanceAction(formData: FormData) {
     p_distance: distance,
   });
   if (error) notice(eventPath(eventId), "error", error.message);
+  await invalidatePublicResults(supabase, eventId);
   revalidatePath(eventPath(eventId));
   revalidatePath("/e/" + event.slug);
   notice(eventPath(eventId), "ok", "Salida de " + distance + " asignada a " + data + " corredores.");
@@ -726,6 +745,7 @@ export async function voidTimingEntryAction(formData: FormData) {
     p_reason: reason,
   });
   if (error) notice(eventPath(eventId), "error", error.message);
+  await invalidatePublicResults(supabase, eventId);
   revalidatePath(eventPath(eventId));
   notice(eventPath(eventId), "ok", "Marca anulada; el historial conserva el valor anterior.");
 }
@@ -793,24 +813,9 @@ export async function reprocessIngestReceiptsAction(formData: FormData) {
   if (error) notice(eventPath(eventId), "error", error.message);
   const processed = data && typeof data === "object" && "processed" in data
     ? Number((data as { processed: unknown }).processed) : rawReceiptIds.length;
+  await invalidatePublicResults(supabase, eventId);
   revalidatePath(eventPath(eventId));
   revalidatePath("/e/" + event.slug);
   notice(eventPath(eventId), "ok", "Se reprocesaron " + processed + " lecturas con su ID y hora originales; la auditoría conserva el rechazo previo.");
-}
-
-export async function revokePublicQrAction(formData: FormData) {
-  const supabase = await signedInClient();
-  const eventId = String(formData.get("event_id") ?? "");
-  const participantId = String(formData.get("participant_id") ?? "");
-  const randomBytes = crypto.getRandomValues(new Uint8Array(24));
-  const publicToken = Array.from(randomBytes).map((byte) => byte.toString(16).padStart(2, "0")).join("");
-  const { error } = await supabase.from("event_participants")
-    .update({ public_token: publicToken })
-    .eq("event_id", eventId)
-    .eq("id", participantId);
-  if (error) notice(eventPath(eventId), "error", error.message);
-  revalidatePath(eventPath(eventId) + "/qr");
-  revalidatePath(eventPath(eventId));
-  notice(eventPath(eventId), "ok", "QR anterior revocado; genera e imprime el enlace nuevo.");
 }
 

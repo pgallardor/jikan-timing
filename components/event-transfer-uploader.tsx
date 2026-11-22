@@ -62,7 +62,7 @@ export default function EventTransferUploader({
     </div>
     <div className="panel-body d07-transfer-body">
       <p className="setting-caption">
-        Carga un paquete generado por RFID Local Race. La primera acción solo valida y muestra cambios; el segundo paso aplica la revisión completa en una transacción. Se conservan las identidades y los QR del destino.
+        Carga un paquete generado por RFID Local Race. La primera acción solo valida y muestra cambios; el segundo paso aplica la revisión completa en una transacción. Se conservan las identidades del destino y su enlace público.
       </p>
       <div className="d07-transfer-controls">
         <label className="ingest-recovery-file">Paquete .yrtransfer

@@ -142,7 +142,7 @@ export default function PublicStandingTable({ participants }: { participants: Pu
     </div> : <div className="empty-state standing-empty">
       <span className="empty-icon">CR</span>
       <h3>{hasActiveFilters ? "No encontramos corredores" : "La nómina todavía no está cargada"}</h3>
-      <p>{hasActiveFilters ? "Prueba con otra búsqueda o cambia los filtros de distancia, sexo y subcategoría." : "Este standing se actualizará cuando la organización añada corredores y marcas."}</p>
+      <p>{hasActiveFilters ? "Prueba con otra búsqueda o cambia los filtros de distancia, sexo y subcategoría." : "Pulsa Actualizar para consultar de nuevo cuando la organización añada corredores o marcas."}</p>
     </div>}
   </>;
 }

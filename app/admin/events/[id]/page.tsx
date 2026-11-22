@@ -149,12 +149,12 @@ export default async function EventPage({
   const { id } = await params;
   const notice = await searchParams;
   const supabase = await createClient();
-  const [{ data: event }, { data: results }, { data: audit }, { data: distances }, { data: participantRoster, error: participantRosterError }, { data: rosterRevisions, error: rosterRevisionError }, { data: participantDistances }, { data: ingestHealthData, error: ingestHealthError }, { data: transferReceipts }, { data: localHistory }] = await Promise.all([
+  const [{ data: event }, { data: results, error: resultsError }, { data: audit }, { data: distances }, { data: participantRoster, error: participantRosterError }, { data: rosterRevisions, error: rosterRevisionError }, { data: participantDistances }, { data: ingestHealthData, error: ingestHealthError }, { data: transferReceipts }, { data: localHistory }] = await Promise.all([
     supabase.from("events").select("*").eq("id", id).maybeSingle(),
     supabase.from("event_results").select("*").eq("event_id", id).order("bib", { ascending: true, nullsFirst: false }).range(0, 4999),
     supabase.from("timing_entry_audit").select("id,participant_id,stage,action,reason,created_at").eq("event_id", id).order("created_at", { ascending: false }).limit(30),
     supabase.from("event_distances").select("distance,official_start_at,started_at,exclude_general_top3_from_categories,award_policy_configured").eq("event_id", id).order("distance"),
-    supabase.from("event_participants").select("id,bib,chip,first_name,last_name,sex,rut,distance,age,age_bracket,category,team").eq("event_id", id).order("bib", { ascending: true, nullsFirst: false }).range(0, 4999),
+    supabase.from("event_participants").select("id,bib,chip,first_name,last_name,sex,rut,distance,age,age_bracket,category,team,public_token").eq("event_id", id).order("bib", { ascending: true, nullsFirst: false }).range(0, 4999),
     supabase.from("event_roster_revisions").select("revision_no,source_name,added_count,updated_count,unchanged_count,skipped_count,issue_count,created_at").eq("event_id", id).order("revision_no", { ascending: false }).limit(10),
     supabase.from("event_participants").select("distance,category").eq("event_id", id).not("distance", "is", null),
     supabase.rpc("get_event_ingest_health", { p_event_id: id }),
@@ -168,8 +168,21 @@ export default async function EventPage({
   const onCourse = people.filter((person) => person.result_status === "EN CARRERA");
   const dnfCount = people.filter((person) => person.result_status === "DNF").length;
   const unmarkedWithoutFinish = people.filter((person) => !person.finish_at && person.result_status !== "DNF").length;
-  const participantNames = new Map(people.map((person) => [person.participant_id, participantDisplayName(person.first_name, person.last_name)]));
-  const rosterById = new Map((participantRoster ?? []).map((person) => [person.id, person]));
+  const resultsByParticipantId = new Map(people.map((person) => [person.participant_id, person]));
+  const rosterPeople = (participantRoster ?? []).map((person) => {
+    const result = resultsByParticipantId.get(person.id);
+    return {
+      ...person,
+      participant_id: person.id,
+      start_at: result?.start_at ?? null,
+      start_origin: result?.start_origin ?? null,
+      finish_at: result?.finish_at ?? null,
+      finish_origin: result?.finish_origin ?? null,
+      result_status: result?.result_status ?? "SIN DATOS",
+    };
+  });
+  const missingResultRows = rosterPeople.filter((person) => !resultsByParticipantId.has(person.participant_id)).length;
+  const participantNames = new Map(rosterPeople.map((person) => [person.participant_id, participantDisplayName(person.first_name, person.last_name)]));
   const participantsByDistance = new Map<string, number>();
   const categoriesByDistance = new Map<string, Set<string>>();
   const startsByDistance = new Map<string, { count: number; times: Set<string> }>();
@@ -181,7 +194,7 @@ export default async function EventPage({
       categoriesByDistance.set(person.distance, categories);
     }
   }
-  for (const person of people) {
+  for (const person of rosterPeople) {
     if (!person.distance || !person.start_at) continue;
     const starts = startsByDistance.get(person.distance) ?? { count: 0, times: new Set<string>() };
     starts.count += 1;
@@ -194,7 +207,7 @@ export default async function EventPage({
   const reprocessStartDefault = event.start_at
     ? datetimeLocalValue(new Date(event.start_at), event.timezone)
     : "";
-  const arrivalParticipants = people.map((person) => ({
+  const arrivalParticipants = rosterPeople.map((person) => ({
     id: person.participant_id,
     bib: person.bib,
     name: participantDisplayName(person.first_name, person.last_name),
@@ -273,7 +286,7 @@ export default async function EventPage({
 
     <div data-event-tab-panel="results">
     <section className="metric-row">
-      <div className="metric-card"><span>Corredores</span><strong>{people.length}</strong></div>
+      <div className="metric-card"><span>Corredores</span><strong>{rosterPeople.length}</strong></div>
       <div className="metric-card"><span>En carrera</span><strong>{onCourse.length}</strong></div>
       <div className="metric-card"><span>Finalizaron</span><strong>{completed.length}</strong></div>
       <div className="metric-card"><span>DNF</span><strong>{dnfCount}</strong></div>
@@ -402,12 +415,12 @@ export default async function EventPage({
           <ParticipantPicker participants={arrivalParticipants} />
           <label>Tiempo transcurrido<input name="elapsed_time" type="text" placeholder="00:25:34" pattern="(?:[0-9]+:)?[0-5]?[0-9]:[0-5][0-9](?:[.,][0-9]{1,3})?" title="Usa HH:MM:SS o MM:SS" required /></label>
           <label>Motivo<input name="reason" minLength={3} placeholder="Ej.: error de lectura del lector" required /></label>
-          <button className="button button-dark button-small" disabled={!people.length}>Guardar llegada manual</button>
+          <button className="button button-dark button-small" disabled={!rosterPeople.length}>Guardar llegada manual</button>
         </form>
         <p className="setting-caption">Ingresa el tiempo transcurrido desde la salida; el sistema calcula la hora de llegada automáticamente. Admite HH:MM:SS o MM:SS, opcionalmente con centésimas o milésimas. Si ya tenía llegada, conserva la marca anterior en el historial.</p>
         <div className="correction-import-block">
           <div><h3>Cargar rectificaciones desde CSV</h3><p>Previsualiza varias llegadas por dorsal y aplica el lote con un motivo común en el historial.</p></div>
-          <FinishCorrectionsImporter eventId={id} participants={people.map((person) => ({
+          <FinishCorrectionsImporter eventId={id} participants={rosterPeople.map((person) => ({
             bib: person.bib,
             name: participantDisplayName(person.first_name, person.last_name),
             hasStart: Boolean(person.start_at),
@@ -418,7 +431,7 @@ export default async function EventPage({
     </section>
 
     <section className="panel" id="nomina" data-event-tab-panel="roster" hidden>
-      <div className="panel-heading"><div><p className="eyebrow">NÓMINA DEL EVENTO</p><h2>Participantes y marcas</h2></div><span className="muted">{people.length} participantes</span></div>
+      <div className="panel-heading"><div><p className="eyebrow">NÓMINA DEL EVENTO</p><h2>Participantes y marcas</h2></div><span className="muted">{rosterPeople.length} participantes</span></div>
       <div className="panel-body">
         {awardPoliciesReady ? <form action={addParticipantAction} className="participant-form">
           <input type="hidden" name="event_id" value={id} />
@@ -440,11 +453,16 @@ export default async function EventPage({
               distances={(distances ?? []).map((distance) => distance.distance)}
             />}
       </div>
+      {(resultsError || missingResultRows > 0) && <p className="notice" role="status" style={{ margin: "0 17px 16px" }}>
+        La nómina se muestra desde los participantes guardados. No se pudieron cargar los datos de marcas para {resultsError ? "este evento" : `${missingResultRows} participante${missingResultRows === 1 ? "" : "s"}`}.
+      </p>}
       <div className="table-wrap"><table className="data-table"><thead><tr><th>Dorsal</th><th>Nombre</th><th>Apellidos</th><th>Chip</th><th>Edad</th><th>Categoría</th><th>Estado</th><th>Salida</th><th>Registrar / corregir salida</th><th>Llegada</th><th>Registrar / corregir llegada</th><th>QR</th></tr></thead><tbody>
-        {people.length ? people.map((person) => <tr key={person.participant_id}>
+        {participantRosterError
+          ? <tr><td colSpan={12} className="muted">No se pudo leer la nómina del evento.</td></tr>
+          : rosterPeople.length ? rosterPeople.map((person) => <tr key={person.participant_id}>
           <td className="bib-cell">{person.bib || "—"}</td>
           <td className="person-cell"><strong>{person.first_name}</strong><small>{person.team || person.sex || " "}</small></td><td>{person.last_name || "—"}</td>
-          <td>{person.chip || <span className="muted">Sin chip</span>}</td><td>{rosterById.get(person.participant_id)?.age ?? "—"}</td><td>{person.category || "—"}</td>
+          <td>{person.chip || <span className="muted">Sin chip</span>}</td><td>{person.age ?? "—"}</td><td>{person.category || "—"}</td>
           <td><span className={"result-tag " + (person.result_status === "FINALIZÓ" ? "result-finalizó" : person.result_status === "EN CARRERA" ? "result-en-carrera" : person.result_status === "DNF" ? "result-dnf" : "")}>{person.result_status}</span></td>
           <td><TimeCell value={person.start_at} origin={person.start_origin} timeZone={event.timezone} /></td>
           <td><EntryActions eventId={id} participantId={person.participant_id} stage="start" value={person.start_at} startAt={person.start_at} timeZone={event.timezone} /></td>

@@ -308,6 +308,12 @@ export async function changeParticipantAction(formData: FormData) {
   catch { notice(eventPath(eventId), "error", "Actualiza la nómina antes de editar al corredor."); }
   if (!expected || typeof expected !== "object" || Array.isArray(expected)) notice(eventPath(eventId), "error", "Versión de nómina inválida.");
   let values = {};
+  if (action === "dnf") {
+    const expectedFinishAt = String(formData.get("expected_finish_at") ?? "").trim();
+    if (expectedFinishAt && !Number.isFinite(Date.parse(expectedFinishAt))) notice(eventPath(eventId), "error", "No se pudo validar la llegada revisada. Actualiza la nómina.");
+    if (expectedFinishAt && formData.get("confirm_finished_dnf") !== "on") notice(eventPath(eventId), "error", "Confirma expresamente que deseas marcar DNF a un corredor con llegada registrada.");
+    values = { confirm_finished_dnf: formData.get("confirm_finished_dnf") === "on", expected_finish_at: expectedFinishAt || null };
+  }
   if (action === "update") {
     const sex = normalizeParticipantSex(String(formData.get("sex") ?? ""));
     const distance = normalizeDistance(String(formData.get("distance") ?? ""));

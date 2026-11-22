@@ -626,3 +626,6 @@ button { cursor: pointer; }
 .participant-category-field { min-width: 0; }
 .new-category-fields { display: grid; gap: 8px; margin-top: 10px; }
 .new-category-fields small { color: var(--muted); line-height: 1.4; }
+.finished-dnf-confirmation { margin: 18px 0; padding: 16px; border: 1px solid #e7b598; border-radius: 8px; background: #fff5ee; }
+.finished-dnf-confirmation p { margin: 0 0 12px; line-height: 1.5; }
+.finished-dnf-confirmation .check-label { align-items: flex-start; line-height: 1.5; }

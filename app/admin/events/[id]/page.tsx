@@ -213,13 +213,13 @@ export default async function EventPage({
       elapsed_seconds: result?.elapsed_seconds ?? calculatedElapsed,
       overall_place: result?.overall_place ?? null,
       category_place: result?.category_place ?? null,
-      result_status: result?.result_status ?? (person.dnf_at && !finishAt ? "DNF" : startAt && finishAt ? "FINALIZÓ" : finishAt ? "LLEGADA SIN SALIDA" : startAt ? "EN CARRERA" : "SIN DATOS"),
+      result_status: person.dnf_at ? "DNF" : result?.result_status ?? (startAt && finishAt ? "FINALIZÓ" : finishAt ? "LLEGADA SIN SALIDA" : startAt ? "EN CARRERA" : "SIN DATOS"),
     };
   });
   const missingResultRows = rosterPeople.filter((person) => !resultsByParticipantId.has(person.participant_id)).length;
-  const completed = rosterPeople.filter((person) => person.start_at && person.finish_at && person.elapsed_seconds != null && Number.isFinite(Number(person.elapsed_seconds)) && Number(person.elapsed_seconds) >= 0);
+  const completed = rosterPeople.filter((person) => person.result_status !== "DNF" && person.start_at && person.finish_at && person.elapsed_seconds != null && Number.isFinite(Number(person.elapsed_seconds)) && Number(person.elapsed_seconds) >= 0);
   const completedIds = new Set(completed.map((person) => person.participant_id));
-  const unresolvedFinishes = rosterPeople.filter((person) => person.finish_at && !completedIds.has(person.participant_id));
+  const unresolvedFinishes = rosterPeople.filter((person) => person.result_status !== "DNF" && person.finish_at && !completedIds.has(person.participant_id));
   const onCourse = rosterPeople.filter((person) => person.start_at && !person.finish_at && person.result_status !== "DNF");
   const dnfCount = rosterPeople.filter((person) => person.result_status === "DNF");
   const unmarkedWithoutFinish = rosterPeople.filter((person) => !person.finish_at && person.result_status !== "DNF");
@@ -533,7 +533,7 @@ export default async function EventPage({
           <td className="person-cell"><strong>{person.first_name}</strong><small>{person.team || person.sex || " "}</small></td><td>{person.last_name || "—"}</td>
           <td>{person.chip || <span className="muted">Sin chip</span>}</td><td>{person.age ?? "—"}</td><td>{person.category || "—"}</td>
           <td><span className={"result-tag " + (person.result_status === "FINALIZÓ" ? "result-finalizó" : person.result_status === "EN CARRERA" ? "result-en-carrera" : person.result_status === "DNF" ? "result-dnf" : "")}>{person.result_status}</span></td>
-          <td><ParticipantActions eventId={id} person={{ id: person.id, bib: person.bib, chip: person.chip, first_name: person.first_name, last_name: person.last_name, sex: person.sex, rut: person.rut, distance: person.distance, age: person.age, age_bracket: person.age_bracket, category: person.category, team: person.team, dnf_at: person.dnf_at }} distances={resultDistances} categoryCatalog={categoryCatalog} hasFinish={Boolean(person.finish_at)} disabled={operatorToolsDisabled} /></td>
+          <td><ParticipantActions eventId={id} person={{ id: person.id, bib: person.bib, chip: person.chip, first_name: person.first_name, last_name: person.last_name, sex: person.sex, rut: person.rut, distance: person.distance, age: person.age, age_bracket: person.age_bracket, category: person.category, team: person.team, dnf_at: person.dnf_at }} distances={resultDistances} categoryCatalog={categoryCatalog} finishAt={person.finish_at} timeZone={event.timezone} disabled={operatorToolsDisabled} /></td>
           <td><TimeCell value={person.start_at} origin={person.start_origin} timeZone={event.timezone} /></td>
           <td><EntryActions eventId={id} participantId={person.participant_id} stage="start" value={person.start_at} startAt={person.start_at} timeZone={event.timezone} /></td>
           <td><TimeCell value={person.finish_at} origin={person.finish_origin} timeZone={event.timezone} /></td>
@@ -605,7 +605,7 @@ export default async function EventPage({
               <div className="table-wrap"><table className="data-table"><thead><tr><th>Dato</th><th>Antes</th><th>Después</th></tr></thead><tbody>
                 {Object.entries(fields).filter(([key]) => !after || before[key] !== after[key]).map(([key, label]) => <tr key={key}><td>{label}</td><td>{key === "dnf_at" ? formatDateTime(before[key] as string | null, event.timezone) : String(before[key] ?? "—")}</td><td>{!after ? "Baja de nómina" : key === "dnf_at" ? formatDateTime(after[key] as string | null, event.timezone) : String(after[key] ?? "—")}</td></tr>)}
               </tbody></table></div>
-              {archivedMarks.length > 0 && <><h4>Marcas al dar de baja</h4>{archivedMarks.map((mark) => <p key={mark.id}>{stageLabels[mark.stage]} · {formatDateTime(mark.captured_at, event.timezone)} · {mark.origin === "manual" ? "Manual" : "RFID"}</p>)}</>}
+              {archivedMarks.length > 0 && <><h4>{change.action === "removed" ? "Marcas al dar de baja" : "Marcas conservadas"}</h4>{archivedMarks.map((mark) => <p key={mark.id}>{stageLabels[mark.stage]} · {formatDateTime(mark.captured_at, event.timezone)} · {mark.origin === "manual" ? "Manual" : "RFID"}</p>)}</>}
               {archivedAudit.length > 0 && <details><summary>Historial de marcas conservado ({archivedAudit.length})</summary>{archivedAudit.map((item) => <p key={item.id}>{formatDateTime(item.created_at, event.timezone)} · {actionLabels[item.action] ?? item.action}{item.reason ? " · " + item.reason : ""}</p>)}</details>}
             </details>
           </article>;

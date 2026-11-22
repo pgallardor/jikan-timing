@@ -136,7 +136,7 @@ export default function PublicStandingTable({ participants }: { participants: Pu
           <td>{sexLabel(person.sex)}</td>
           <td>{person.category || "—"}</td>
           <td><span className={"result-tag " + (person.result_status === "FINALIZÓ" ? "result-finalizó" : person.result_status === "EN CARRERA" ? "result-en-carrera" : person.result_status === "DNF" ? "result-dnf" : "")}>{person.result_status}</span></td>
-          <td className="bib-cell">{formatDuration(person.elapsed_seconds)}</td>
+          <td className="bib-cell">{person.result_status === "DNF" ? "—" : formatDuration(person.elapsed_seconds)}</td>
         </tr>)}</tbody>
       </table>
     </div> : <div className="empty-state standing-empty">

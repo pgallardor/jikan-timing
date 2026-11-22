@@ -24,6 +24,7 @@ import RosterImporter from "@/components/roster-importer";
 import EventTransferUploader from "@/components/event-transfer-uploader";
 import { createClient } from "@/lib/supabase/server";
 import { datetimeLocalValue, formatDateTime, participantDisplayName } from "@/lib/format";
+import { normalizeDistance } from "@/lib/participant-category";
 
 const statusLabels: Record<string, string> = { draft: "Borrador", open: "En curso", closed: "Cerrado", published: "Publicado", cancelled: "Cancelado" };
 const stageLabels: Record<string, string> = { start: "Salida", finish: "Llegada" };
@@ -148,9 +149,22 @@ export default async function EventPage({
   const { id } = await params;
   const notice = await searchParams;
   const supabase = await createClient();
-  const [{ data: event }, { data: results, error: resultsError }, { data: audit }, { data: distances }, { data: participantRoster, error: participantRosterError }, { data: rosterRevisions, error: rosterRevisionError }, { data: participantDistances }, { data: ingestHealthData, error: ingestHealthError }, { data: transferReceipts }, { data: localHistory }] = await Promise.all([
+  const [
+    { data: event },
+    { data: results, error: resultsError },
+    { data: timingEntries, error: timingEntriesError },
+    { data: audit },
+    { data: distances, error: distancesError },
+    { data: participantRoster, error: participantRosterError },
+    { data: rosterRevisions, error: rosterRevisionError },
+    { data: participantDistances },
+    { data: ingestHealthData, error: ingestHealthError },
+    { data: transferReceipts },
+    { data: localHistory },
+  ] = await Promise.all([
     supabase.from("events").select("*").eq("id", id).maybeSingle(),
     supabase.from("event_results").select("event_id,participant_id,bib,chip,first_name,last_name,sex,category,team,start_at,start_origin,finish_at,finish_origin,result_status,elapsed_seconds,overall_place,category_place,distance").eq("event_id", id).order("bib", { ascending: true, nullsFirst: false }).range(0, 4999),
+    supabase.from("timing_entries").select("participant_id,stage,captured_at,origin").eq("event_id", id).range(0, 9999),
     supabase.from("timing_entry_audit").select("id,participant_id,stage,action,reason,created_at").eq("event_id", id).order("created_at", { ascending: false }).limit(30),
     supabase.from("event_distances").select("distance,official_start_at,started_at,exclude_general_top3_from_categories,award_policy_configured").eq("event_id", id).order("distance"),
     supabase.from("event_participants").select("id,bib,chip,first_name,last_name,sex,rut,distance,age,age_bracket,category,team").eq("event_id", id).order("bib", { ascending: true, nullsFirst: false }).range(0, 4999),
@@ -163,24 +177,48 @@ export default async function EventPage({
   if (!event) notFound();
   const awardPoliciesReady = Boolean(distances?.length) && distances!.every((distance) => distance.award_policy_configured);
   const people = results ?? [];
-  const completed = people.filter((person) => person.result_status === "FINALIZÓ");
-  const onCourse = people.filter((person) => person.result_status === "EN CARRERA");
-  const dnfCount = people.filter((person) => person.result_status === "DNF").length;
-  const unmarkedWithoutFinish = people.filter((person) => !person.finish_at && person.result_status !== "DNF").length;
   const resultsByParticipantId = new Map(people.map((person) => [person.participant_id, person]));
+  const timingByParticipantId = new Map<string, { start?: { captured_at: string; origin: string }; finish?: { captured_at: string; origin: string } }>();
+  for (const entry of timingEntries ?? []) {
+    const current = timingByParticipantId.get(entry.participant_id) ?? {};
+    current[entry.stage === "start" ? "start" : "finish"] = { captured_at: entry.captured_at, origin: entry.origin };
+    timingByParticipantId.set(entry.participant_id, current);
+  }
   const rosterPeople = (participantRoster ?? []).map((person) => {
     const result = resultsByParticipantId.get(person.id);
+    const timing = timingByParticipantId.get(person.id);
+    const startAt = result?.start_at ?? timing?.start?.captured_at ?? null;
+    const finishAt = result?.finish_at ?? timing?.finish?.captured_at ?? null;
+    const elapsedFromMarks = startAt && finishAt
+      ? (Date.parse(finishAt) - Date.parse(startAt)) / 1000
+      : null;
+    const calculatedElapsed = elapsedFromMarks != null && Number.isFinite(elapsedFromMarks) && elapsedFromMarks >= 0
+      ? elapsedFromMarks
+      : null;
     return {
       ...person,
       participant_id: person.id,
-      start_at: result?.start_at ?? null,
-      start_origin: result?.start_origin ?? null,
-      finish_at: result?.finish_at ?? null,
-      finish_origin: result?.finish_origin ?? null,
-      result_status: result?.result_status ?? "SIN DATOS",
+      start_at: startAt,
+      start_origin: result?.start_origin ?? timing?.start?.origin ?? null,
+      finish_at: finishAt,
+      finish_origin: result?.finish_origin ?? timing?.finish?.origin ?? null,
+      elapsed_seconds: result?.elapsed_seconds ?? calculatedElapsed,
+      overall_place: result?.overall_place ?? null,
+      category_place: result?.category_place ?? null,
+      result_status: result?.result_status ?? (startAt && finishAt ? "FINALIZÓ" : finishAt ? "LLEGADA SIN SALIDA" : startAt ? "EN CARRERA" : "SIN DATOS"),
     };
   });
   const missingResultRows = rosterPeople.filter((person) => !resultsByParticipantId.has(person.participant_id)).length;
+  const completed = rosterPeople.filter((person) => person.start_at && person.finish_at && person.elapsed_seconds != null && Number.isFinite(Number(person.elapsed_seconds)) && Number(person.elapsed_seconds) >= 0);
+  const completedIds = new Set(completed.map((person) => person.participant_id));
+  const unresolvedFinishes = rosterPeople.filter((person) => person.finish_at && !completedIds.has(person.participant_id));
+  const onCourse = rosterPeople.filter((person) => person.start_at && !person.finish_at && person.result_status !== "DNF");
+  const dnfCount = rosterPeople.filter((person) => person.result_status === "DNF");
+  const unmarkedWithoutFinish = rosterPeople.filter((person) => !person.finish_at && person.result_status !== "DNF");
+  const resultDistances = [...new Set([
+    ...(distances ?? []).map((distance) => distance.distance),
+    ...rosterPeople.map((person) => person.distance),
+  ].map((distance) => normalizeDistance(distance ?? "")).filter((distance): distance is string => Boolean(distance)))];
   const participantNames = new Map(rosterPeople.map((person) => [person.participant_id, participantDisplayName(person.first_name, person.last_name)]));
   const participantsByDistance = new Map<string, number>();
   const categoriesByDistance = new Map<string, Set<string>>();
@@ -243,6 +281,14 @@ export default async function EventPage({
     </p>}
     <AdminEventTabs eventId={id} />
     {notice.ok && <p className="notice">{notice.ok}</p>}{notice.error && <p className="notice error">{notice.error}</p>}
+    {(resultsError || timingEntriesError || distancesError || participantRosterError || missingResultRows > 0) && <p className="notice error" role="status">
+      {participantRosterError
+        ? "No se pudo consultar la nómina guardada; el conteo y los resultados pueden estar incompletos."
+        : resultsError || missingResultRows > 0
+        ? `La vista de resultados no coincide con la nómina (${resultsError ? "consulta fallida" : `${missingResultRows} participantes sin fila de resultado`}). Las marcas directas se muestran como respaldo; los puestos pueden faltar.`
+        : "No se pudieron cargar las marcas o las distancias configuradas. El panel puede estar incompleto."}
+      {resultsError && ` ${resultsError.message}`}{timingEntriesError && ` ${timingEntriesError.message}`}{distancesError && ` ${distancesError.message}`}
+    </p>}
     <div data-event-tab-panel="local" hidden>
     <section className="panel d07-transfer-panel">
       <div className="panel-heading"><div><p className="eyebrow">D07 · PREPARACIÓN OFFLINE</p><h2>Preparar operación local vinculada</h2></div>
@@ -286,24 +332,38 @@ export default async function EventPage({
     <div data-event-tab-panel="results">
     <section className="metric-row">
       <div className="metric-card"><span>Corredores</span><strong>{rosterPeople.length}</strong></div>
-      <div className="metric-card"><span>En carrera</span><strong>{onCourse.length}</strong></div>
-      <div className="metric-card"><span>Finalizaron</span><strong>{completed.length}</strong></div>
-      <div className="metric-card"><span>DNF</span><strong>{dnfCount}</strong></div>
+      <div className="metric-card"><span>En carrera</span><strong>{resultsError || timingEntriesError || participantRosterError ? "—" : onCourse.length}</strong></div>
+      <div className="metric-card"><span>Finalizaron</span><strong>{participantRosterError ? "—" : completed.length}</strong></div>
+      <div className="metric-card"><span>DNF</span><strong>{resultsError || participantRosterError ? "—" : dnfCount.length}</strong></div>
     </section>
 
     <section className="panel" id="resultados">
       <div className="panel-heading panel-heading-dnf">
         <div><p className="eyebrow">CLASIFICACIÓN · SALIDA → LLEGADA</p><h2>Resultados del evento</h2></div>
         <div className="bulk-dnf-tools">
-          <span className="muted">{completed.length} tiempos completos · {dnfCount} DNF</span>
-          {unmarkedWithoutFinish > 0 ? <form action={markUnfinishedParticipantsAsDnfAction} className="bulk-dnf-form">
-            <input type="hidden" name="event_id" value={id} />
-            <label><input type="checkbox" name="confirm_dnf" required /> Confirmo marcar como DNF a los {unmarkedWithoutFinish} participantes sin llegada</label>
-            <button className="button button-danger button-small">Marcar como DNF</button>
-          </form> : <span className="muted">No hay participantes pendientes de marcar como DNF.</span>}
+          <span className="muted">{completed.length} tiempos completos · {resultsError ? "DNF no disponible" : `${dnfCount.length} DNF`}</span>
+          {resultsError || participantRosterError || timingEntriesError || missingResultRows > 0 ? <span className="notice error">No se puede validar el estado DNF porque falló o no coincide una consulta de resultados.</span>
+            : unmarkedWithoutFinish.length > 0 ? <form action={markUnfinishedParticipantsAsDnfAction} className="bulk-dnf-form">
+              <input type="hidden" name="event_id" value={id} />
+              <label><input type="checkbox" name="confirm_dnf" required /> Confirmo marcar como DNF a los {unmarkedWithoutFinish.length} participantes sin llegada</label>
+              <button className="button button-danger button-small">Marcar como DNF</button>
+            </form> : <span className="muted">No hay participantes pendientes de marcar como DNF.</span>}
         </div>
       </div>
-      <AdminResultsTable participants={completed} />
+      <AdminResultsTable participants={completed} distances={resultDistances} />
+      {unresolvedFinishes.length > 0 && <div className="panel-body">
+        <h3>Llegadas pendientes de revisión</h3>
+        <p className="setting-caption">Se conserva cada llegada aunque falte la salida o el par de marcas no permita calcular un tiempo. Corrige las marcas desde Nómina para asignar el puesto.</p>
+        <div className="table-wrap"><table className="data-table"><thead><tr><th>Dorsal</th><th>Corredor</th><th>Distancia</th><th>Estado</th><th>Salida</th><th>Llegada</th></tr></thead><tbody>
+          {unresolvedFinishes.map((person) => <tr key={person.participant_id}>
+            <td className="bib-cell">{person.bib || "—"}</td>
+            <td className="person-cell"><strong>{participantDisplayName(person.first_name, person.last_name)}</strong><small>{person.team || "Sin equipo"}</small></td>
+            <td>{person.distance || "—"}</td><td>{person.result_status}</td>
+            <td><TimeCell value={person.start_at} origin={person.start_origin} timeZone={event.timezone} /></td>
+            <td><TimeCell value={person.finish_at} origin={person.finish_origin} timeZone={event.timezone} /></td>
+          </tr>)}
+        </tbody></table></div>
+      </div>}
     </section>
     </div>
 
@@ -452,9 +512,6 @@ export default async function EventPage({
               distances={(distances ?? []).map((distance) => distance.distance)}
             />}
       </div>
-      {(resultsError || missingResultRows > 0) && <p className="notice" role="status" style={{ margin: "0 17px 16px" }}>
-        La nómina se muestra desde los participantes guardados. No se pudieron cargar los datos de marcas para {resultsError ? "este evento" : `${missingResultRows} participante${missingResultRows === 1 ? "" : "s"}`}.
-      </p>}
       <div className="table-wrap"><table className="data-table"><thead><tr><th>Dorsal</th><th>Nombre</th><th>Apellidos</th><th>Chip</th><th>Edad</th><th>Categoría</th><th>Estado</th><th>Salida</th><th>Registrar / corregir salida</th><th>Llegada</th><th>Registrar / corregir llegada</th></tr></thead><tbody>
         {participantRosterError
           ? <tr><td colSpan={11} className="muted">No se pudo leer la nómina del evento.</td></tr>

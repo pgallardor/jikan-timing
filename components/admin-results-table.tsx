@@ -34,11 +34,11 @@ function sexLabel(value: string | null) {
   return "Sin sexo";
 }
 
-export default function AdminResultsTable({ participants }: { participants: ResultRow[] }) {
+export default function AdminResultsTable({ participants, distances: configuredDistances }: { participants: ResultRow[]; distances: string[] }) {
   const [selectedDistance, setSelectedDistance] = useState("");
   const distances = useMemo(() => [...new Set(
-    participants.map((person) => normalizeDistance(person.distance ?? "")).filter((distance): distance is string => Boolean(distance)),
-  )].sort((left, right) => left.localeCompare(right, "es-CL", { sensitivity: "base", numeric: true })), [participants]);
+    configuredDistances.map((distance) => normalizeDistance(distance)).filter((distance): distance is string => Boolean(distance)),
+  )].sort((left, right) => left.localeCompare(right, "es-CL", { sensitivity: "base", numeric: true })), [configuredDistances]);
   const filtered = useMemo(() => participants
     .filter((person) => !selectedDistance || normalizeDistance(person.distance ?? "") === selectedDistance)
     .sort((left, right) => {
@@ -65,7 +65,7 @@ export default function AdminResultsTable({ participants }: { participants: Resu
         <td className="bib-cell">{person.overall_place ?? "—"} <small> / cat. {person.category_place ?? "—"}</small></td>
         <td>{person.bib || "—"}</td><td className="person-cell"><strong>{[person.first_name, person.last_name].filter(Boolean).join(" ") || "Participante"}</strong><small>{person.team || "Sin equipo"}</small></td>
         <td>{normalizeDistance(person.distance ?? "") || "—"}</td><td>{sexLabel(person.sex)}</td><td>{person.category || "—"}</td><td><span className="result-tag result-finalizó">FINALIZÓ</span></td><td className="bib-cell">{formatDuration(Number(person.elapsed_seconds))}</td>
-      </tr>) : <tr><td colSpan={8} className="muted">Los tiempos y puestos aparecerán cuando existan marcas de salida y llegada.</td></tr>}
+      </tr>) : <tr><td colSpan={8} className="muted">{participants.length ? "No hay tiempos completos para esta distancia." : "Aún no hay participantes con marcas válidas de salida y llegada."}</td></tr>}
     </tbody></table></div>
   </>;
 }

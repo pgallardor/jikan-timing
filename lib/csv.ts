@@ -1,4 +1,5 @@
-import { categoryWithGender, normalizeAgeBracket, normalizeDistance, normalizeParticipantSex } from "@/lib/participant-category";
+import { ageGroupValue } from "./classification";
+import { normalizeDistance, normalizeParticipantSex } from "@/lib/participant-category";
 
 export type CsvParticipant = {
   bib: string | null;
@@ -107,8 +108,8 @@ export function parseParticipantsCsv(text: string): CsvParticipant[] {
     }
 
     const sex = normalizeParticipantSex(value("sex"));
-    const rawAgeBracket = value("age_bracket") || value("category");
-    const ageBracket = (normalizeAgeBracket(rawAgeBracket) ?? rawAgeBracket) || null;
+    const rawAgeBracket = value("age_bracket");
+    const ageBracket = ageGroupValue(rawAgeBracket);
     const rawDistance = value("distance") || titleDistance || "";
     const distance = normalizeDistance(rawDistance);
     participants.push({
@@ -119,8 +120,8 @@ export function parseParticipantsCsv(text: string): CsvParticipant[] {
       sex,
       rut: value("rut") || null,
       distance,
-      age_bracket: rawAgeBracket || null,
-      category: categoryWithGender(distance, sex, ageBracket),
+      age_bracket: ageBracket,
+      category: value("category") || null,
       team: value("team") || null,
     });
   }

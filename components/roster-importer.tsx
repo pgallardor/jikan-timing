@@ -51,7 +51,7 @@ const fieldLabels: Record<RosterField, string> = {
   distance: "Distancia",
   age: "Edad numérica",
   age_bracket: "Grupo etario",
-  category: "Categoría",
+  category: "Categoría original (referencia)",
   team: "Equipo",
 };
 
@@ -70,7 +70,7 @@ const rosterPreviewFields: { field: RosterField; label: string }[] = [
   { field: "distance", label: "Distancia" },
   { field: "age", label: "Edad" },
   { field: "age_bracket", label: "Grupo etario" },
-  { field: "category", label: "Categoría" },
+  { field: "category", label: "Categoría original (referencia)" },
   { field: "team", label: "Equipo" },
 ];
 const PAGE_SIZE = 25;

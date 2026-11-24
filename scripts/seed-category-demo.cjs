@@ -1,0 +1,33 @@
+// Persistent, entirely fictional review fixture. Never targets a remote database.
+const fs=require('node:fs');
+const path=require('node:path');
+const assert=require('node:assert/strict');
+const {randomUUID}=require('node:crypto');
+const {createServerClient}=require('@supabase/ssr');
+const url=process.env.OPERATOR_SUPABASE_URL,key=process.env.OPERATOR_SUPABASE_KEY;
+assert.equal(url,'http://127.0.0.1:55421');
+const output=path.resolve(__dirname,'../local-backups/category-criteria-qa');
+const unwrap=r=>{assert.equal(r.error,null,r.error?.message);return r.data;};
+(async()=>{
+  const credentials=path.join(output,'acceso-demo.txt');
+  assert.ok(!fs.existsSync(credentials),'La demo ya existe; consulta acceso-demo.txt.');
+  const jar=new Map();
+  const client=createServerClient(url,key,{cookies:{getAll:()=>[...jar].map(([name,value])=>({name,value})),setAll:entries=>entries.forEach(c=>jar.set(c.name,c.value))},auth:{autoRefreshToken:false}});
+  const email='categorias-'+randomUUID().slice(0,8)+'@example.test',password=randomUUID()+'aA1!';
+  const auth=unwrap(await client.auth.signUp({email,password}));assert.ok(auth.session);
+  const event=unwrap(await client.from('events').insert({owner_id:auth.user.id,name:'DEMO SINTÉTICA · Categorías por criterios',slug:'demo-criterios-'+randomUUID().slice(0,8),event_date:'2026-11-23',timezone:'America/Santiago',status:'open'}).select().single());
+  unwrap(await client.from('event_distances').insert(['10KM','5KM'].map(distance=>({event_id:event.id,distance,award_policy_configured:true,exclude_general_top3_from_categories:distance==='10KM'}))));
+  const people=unwrap(await client.from('event_participants').insert(Array.from({length:32},(_,i)=>({event_id:event.id,bib:String(100+i),chip:'DEMO'+i,first_name:'Corredor ficticio',last_name:String(i+1),distance:i<16?'10KM':'5KM',sex:i%2?'F':'M',age_bracket:i===28?null:['20-29','30 a 39 años','40–49'][Math.floor(i/2)%3],category:i%2?'Texto histórico A':'Texto histórico B',team:'Club de prueba'}))).select());
+  const start='2026-11-23T12:00:00.000Z';
+  for(const distance of ['10KM','5KM'])unwrap(await client.rpc('record_distance_start_manually',{p_event_id:event.id,p_distance:distance,p_captured_at:start,p_reason:'Salida de demostración sintética',p_confirm_replace:false}));
+  for(let i=0;i<people.length-2;i++)unwrap(await client.rpc('record_manual_entry',{p_event_id:event.id,p_participant_id:people[i].id,p_stage:'finish',p_captured_at:new Date(Date.parse(start)+(1800+Math.floor(i/2)*30)*1000).toISOString(),p_reason:'Llegada ficticia de demostración'}));
+  const dnf=unwrap(await client.from('event_participants').select('*').eq('id',people[12].id).single());
+  const expected=Object.fromEntries(['bib','chip','first_name','last_name','sex','rut','distance','age','age_bracket','category','team','dnf_at'].map(k=>[k,dnf[k]]));
+  const finish=unwrap(await client.from('timing_entries').select('captured_at').eq('participant_id',dnf.id).eq('stage','finish').single());
+  unwrap(await client.rpc('change_event_participant',{p_event_id:event.id,p_participant_id:dnf.id,p_action:'dnf',p_values:{confirm_finished_dnf:true,expected_finish_at:finish.captured_at},p_expected:expected,p_reason:'DNF ficticio después de llegada'}));
+  const admin='http://127.0.0.1:3100/admin/events/'+event.id;
+  fs.writeFileSync(credentials,`SOLO DATOS SINTÉTICOS. Base: ${url}\nWeb: http://127.0.0.1:3100/login\nEmail: ${email}\nContraseña: ${password}\nEvento: ${admin}\nStanding: http://127.0.0.1:3100/e/${event.slug}\n10KM excluye la general; 5KM permite doble premiación. Hay DNF con llegada y criterios incompletos.\n`);
+  const response=await fetch(admin+'/podiums',{headers:{Cookie:[...jar].map(([k,v])=>k+'='+v).join('; ')}});assert.equal(response.status,200);
+  fs.writeFileSync(path.join(output,'podios-sinteticos.pdf'),Buffer.from(await response.arrayBuffer()));
+  console.log(JSON.stringify({eventId:event.id,slug:event.slug,participants:people.length,accessFile:'local-backups/category-criteria-qa/acceso-demo.txt'}));
+})().catch(e=>{console.error(e);process.exit(1);});

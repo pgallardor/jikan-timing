@@ -12,40 +12,19 @@ require.extensions[".ts"] = (module, filename) => {
 const { localDateTimeToUtc } = require("../lib/format.ts");
 const { prepareManualFinishes, parsePastedFinishes } = require("../lib/manual-finishes.ts");
 const { buildPodiumGroups, renderPodiumsPdf } = require("../lib/podium-export.ts");
-const { buildCategoryCatalog, participantBaseCategory, categoryAfterDistanceChange, resolveCategoryChoice, existingCategoryChoice } = require("../lib/category-options.ts");
+const { categoryIdentity, categoryLabel, ageGroupValue } = require("../lib/classification.ts");
 const runner = { id: "runner-1", bib: "001", name: "Camila Muñoz", startAt: "2026-11-22T12:00:00.125Z", finishAt: null, dnf: false };
 const input = (patch = {}) => ({ bib: "001", mode: "elapsed", value: "32:10.125", reason: "", ...patch });
 
-test("category catalog is scoped by distance, strips age suffixes and deduplicates case/spacing", () => {
-  const catalog = buildCategoryCatalog([
-    { distance: "10 km", category: " Élite   Varones · 30 a 39 años ", age_bracket: "30-39" },
-    { distance: "10KM", category: "élite varones · 40 a 49 años", age_bracket: "40 a 49 años" },
-    { distance: "5KM", category: "Juvenil", age_bracket: null },
-    { distance: "5KM", category: null, age_bracket: null },
-  ]);
-  assert.deepEqual(catalog["10KM"], ["Élite Varones"]);
-  assert.deepEqual(catalog["5KM"], ["Juvenil"]);
-  assert.equal(participantBaseCategory("Masters · M35", "M35"), "Masters");
-});
-test("changing distance keeps a shared category and clears one unavailable in the new distance", () => {
-  assert.equal(categoryAfterDistanceChange("élite", ["Juvenil", "Élite"]), "Élite");
-  assert.equal(categoryAfterDistanceChange("Élite", ["Juvenil"]), null);
-  assert.equal(categoryAfterDistanceChange(null, ["Juvenil"]), null);
-});
-test("category selection requires explicit creation and reuses existing canonical spelling", () => {
-  const options = ["Élite Varones", "Promocional"];
-  assert.equal(resolveCategoryChoice(existingCategoryChoice("élite varones"), "", options), "Élite Varones");
-  assert.equal(resolveCategoryChoice("new", "  ÉLITE   VARONES ", options), "Élite Varones");
-  assert.equal(resolveCategoryChoice("new", "  Nueva   categoría ", options), "Nueva categoría");
-  assert.equal(resolveCategoryChoice("", "Ignored draft", options), null);
-  assert.throws(() => resolveCategoryChoice(existingCategoryChoice("Juvenil"), "", options), /esta distancia/);
-  assert.throws(() => resolveCategoryChoice("Nueva categoría", "", options), /Crear otra/);
-});
-test("new category rejects blank/oversized names and malformed selections", () => {
-  assert.throws(() => resolveCategoryChoice("new", "   ", []));
-  assert.throws(() => resolveCategoryChoice("new", "X".repeat(121), []));
-  assert.throws(() => resolveCategoryChoice("existing:%invalid", "", []));
-  assert.equal(resolveCategoryChoice(existingCategoryChoice('Categoría "A&B"'), "", ['Categoría "A&B"']), 'Categoría "A&B"');
+test("category identity ignores names and uses normalized criterion values", () => {
+  const a={sex:"F",age_bracket:"30-39",category:"Inventada"};
+  assert.equal(categoryIdentity(a),categoryIdentity({...a,age_bracket:"30 a 39 años",category:"Otro nombre"}));
+  assert.equal(categoryLabel(a),"Damas · 30 a 39 años");
+  assert.notEqual(categoryIdentity(a),categoryIdentity({...a,sex:"M"}));
+  assert.notEqual(categoryIdentity(a),categoryIdentity({...a,age_bracket:"40–49"}));
+  for(const age of [null,"", "35", "50-30", "90-130"]) assert.equal(categoryIdentity({...a,age_bracket:age}),null);
+  assert.equal(categoryIdentity({...a,sex:"no_informado"}),null);
+  assert.equal(ageGroupValue(" u18 "),"U18");
 });
 
 test("manual elapsed and clock input preserve milliseconds and event timezone", () => {
@@ -84,70 +63,25 @@ test("Excel paste preserves leading-zero bibs, fractional commas, reasons and fu
   assert.throws(() => prepareManualFinishes(Array.from({ length: 5001 }, () => input()), [runner], "UTC", "Control"));
 });
 
-const candidate = (bib, time, patch = {}) => ({ participant_id: bib, bib, first_name: "José María", last_name: "Muñoz Pérez", team: "Club Ñuble", distance: "10KM", sex: "M", category: "10KM Varones · 30 a 39 años", age_bracket: "30 a 39 años", result_status: "FINALIZÓ", elapsed_seconds: time, overall_place: Number(bib), ...patch });
+const candidate = (bib, time, patch = {}) => ({ participant_id: bib, bib, first_name: "José María", last_name: "Muñoz Pérez", team: "Club Ñuble", distance: "10KM", sex: "M", category: "10KM Varones · 30 a 39 años", age_bracket: "30 a 39 años", result_status: "FINALIZÓ", elapsed_seconds: time, overall_place: Number(bib), category_place: Number(bib), ...patch });
 const people = [candidate("1", 10), candidate("2", 20), candidate("3", 30), candidate("4", 40), candidate("5", 50), candidate("6", 60)];
 const policy = (exclude) => [{ distance: "10KM", award_policy_configured: true, exclude_general_top3_from_categories: exclude }];
-test("distance/sex categories do not repeat general podiums or clutter age headings", () => {
-  const groups = buildPodiumGroups(people, policy(false));
-  assert.equal(groups.length, 2);
-  assert.deepEqual(groups.map((g) => g.type), ["General", "Grupo etario"]);
-  assert.equal(groups[1].category, "");
-  groups.forEach((g) => assert.deepEqual(g.rows.map((r) => r.bib), ["1", "2", "3"]));
+test("PDF has just general and calculated category, independent of imported names", () => {
+  const renamed=people.map((p,i)=>({...p,category:i%2 ? "Élite" : "Nombre libre"}));
+  const groups=buildPodiumGroups(renamed,policy(false));
+  assert.deepEqual(groups.map((g)=>g.type),["General","Categoría"]);
+  groups.forEach((g)=>assert.deepEqual(g.rows.map((r)=>r.bib),["1","2","3"]));
 });
-test("general exclusion preserves general and promotes the next eligible age winners", () => {
-  const groups = buildPodiumGroups(people, policy(true));
-  assert.deepEqual(groups.find((g) => g.type === "General").rows.map((r) => r.bib), ["1", "2", "3"]);
-  assert.deepEqual(groups.find((g) => g.type === "Grupo etario").rows.map((r) => r.bib), ["4", "5", "6"]);
+test("PDF consumes official category ranks including promoted places without reranking", () => {
+  const classified=people.map((p,i)=>({...p,category_place:i<3 ? null : i-2}));
+  const groups=buildPodiumGroups(classified,policy(true));
+  assert.deepEqual(groups[1].rows.map((r)=>[r.bib,r.place]),[["4",1],["5",2],["6",3]]);
+  const gaps=buildPodiumGroups([candidate("1",10,{category_place:2}),candidate("2",20,{category_place:4})],[]);
+  assert.deepEqual(gaps[1].rows.map((r)=>r.place),[2]);
 });
-test("real categories obey the distance exclusion policy for category and age podiums", () => {
-  const elite = people.map((p) => ({ ...p, category: "Élite Varones · 30 a 39 años" }));
-  const groups = buildPodiumGroups(elite, policy(true));
-  assert.deepEqual(groups.map((g) => g.type), ["General", "Categoría", "Grupo etario"]);
-  assert.deepEqual(groups.find((g) => g.type === "Categoría").rows.map((r) => r.bib), ["4", "5", "6"]);
-  assert.deepEqual(groups.find((g) => g.type === "Grupo etario").rows.map((r) => r.bib), ["4", "5", "6"]);
-  const allowed = buildPodiumGroups(elite, policy(false));
-  assert.deepEqual(allowed.find((g) => g.type === "Categoría").rows.map((r) => r.bib), ["1", "2", "3"]);
-  assert.deepEqual(allowed.find((g) => g.type === "Grupo etario").rows.map((r) => r.bib), ["1", "2", "3"]);
-});
-
-test("category exclusion applies without age metadata and excludes all tied general winners", () => {
-  const elite = people.map((p) => ({ ...p, category: "Élite Varones", age_bracket: null }));
-  const groups = buildPodiumGroups(elite, policy(true));
-  assert.deepEqual(groups.map((g) => g.type), ["General", "Categoría"]);
-  assert.deepEqual(groups[1].rows.map((r) => r.bib), ["4", "5", "6"]);
-  const tied = elite.map((p, i) => ({ ...p, elapsed_seconds: [10,20,30,30,50,60][i], overall_place: [1,2,3,3,5,6][i] }));
-  const tieGroups = buildPodiumGroups(tied, policy(true));
-  assert.deepEqual(tieGroups[0].rows.map((r) => r.place), [1,2,3,3]);
-  assert.deepEqual(tieGroups[1].rows.map((r) => [r.bib,r.place]), [["5",1],["6",2]]);
-  const unconfigured = [{ ...policy(true)[0], award_policy_configured: false }];
-  assert.deepEqual(buildPodiumGroups(elite, unconfigured)[1].rows.map((r) => r.bib), ["1","2","3"]);
-});
-
-test("age encoded only in category labels still excludes general and promotes remaining finishers", () => {
-  const rows = [
-    candidate("200",5400,{ sex:"F",category:"Damas · 30 a 39 años",age_bracket:null,overall_place:1 }),
-    candidate("201",7200,{ sex:"F",category:"Damas · 30 a 39 años",age_bracket:null,overall_place:2 }),
-    candidate("210",7270,{ sex:"F",category:"Damas · 50 a 59 años",age_bracket:null,overall_place:3 }),
-    candidate("211",7272,{ sex:"F",category:"Damas · 50 a 59 años",age_bracket:null,overall_place:4 }),
-    candidate("212",7275,{ sex:"F",category:"Damas · 50 a 59 años",age_bracket:null,overall_place:5 }),
-  ];
-  const groups = buildPodiumGroups(rows,policy(true));
-  assert.deepEqual(groups.map((g) => g.type),["General","Grupo etario"]);
-  assert.deepEqual(groups[0].rows.map((r) => r.bib),["200","201","210"]);
-  assert.equal(groups[1].ageBracket,"50 a 59 años");
-  assert.deepEqual(groups[1].rows.map((r) => [r.bib,r.place]),[["211",1],["212",2]]);
-  const legacyHyphen = rows.map((p) => ({ ...p, category:p.category.replace(" a ","-"),age_bracket:null }));
-  assert.deepEqual(buildPodiumGroups(legacyHyphen,policy(true))[1].rows.map((r) => r.bib),["211","212"]);
-});
-
-test("general aliases merge age groups but distinct distances and category names stay distinct", () => {
-  for (const category of ["10 km Masculino", "10KM", "General Varones", "Varones", "General 10KM Varones"]) {
-    assert.ok(buildPodiumGroups([candidate("1", 10, { category })], policy(false)).every((g) => g.type !== "Categoría"), category);
-  }
-  assert.equal(buildPodiumGroups([candidate("1", 10, { distance: "1.5KM", category: "15KM Varones" })], []).filter((g) => g.type === "Categoría").length, 1);
-  assert.equal(buildPodiumGroups([candidate("1", 10, { category: "10KM Élite Varones" })], []).filter((g) => g.type === "Categoría").length, 1);
-  const mixed = buildPodiumGroups([candidate("1", 10), candidate("2", 20, { category: "10 km Varones · 30 a 39 años" })], policy(false));
-  assert.equal(mixed.filter((g) => g.type === "Grupo etario").length, 1);
+test("missing criteria never fall back to the imported category label",()=>{
+  const groups=buildPodiumGroups([candidate("1",10,{age_bracket:null,category:"Varones · 30 a 39 años",category_place:null})],[]);
+  assert.deepEqual(groups.map((g)=>g.type),["General"]);
 });
 
 test("RUT-like IDs are removed from team exports while club names and years remain", () => {
@@ -181,7 +115,7 @@ test("PDF keeps small podiums whole and every continuation heading has participa
 });
 
 test("podiums preserve rank ties including multiple people in third place", () => {
-  const tied = people.map((p, i) => ({ ...p, elapsed_seconds: [10, 20, 30, 30, 50, 60][i], overall_place: [1, 2, 3, 3, 5, 6][i] }));
+  const tied = people.map((p, i) => ({ ...p, elapsed_seconds: [10, 20, 30, 30, 50, 60][i], overall_place: [1, 2, 3, 3, 5, 6][i], category_place:[1,2,3,3,5,6][i] }));
   buildPodiumGroups(tied, policy(false)).forEach((g) => assert.deepEqual(g.rows.map((r) => r.place), [1, 2, 3, 3]));
 });
 test("podiums separate distances, sexes and categories and ignore invalid results", () => {

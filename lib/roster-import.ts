@@ -1,4 +1,5 @@
-import { categoryWithGender, normalizeAgeBracket, normalizeDistance, normalizeParticipantSex, type ParticipantSex } from "@/lib/participant-category";
+import { ageGroupValue } from "./classification";
+import { normalizeAgeBracket, normalizeDistance, normalizeParticipantSex, type ParticipantSex } from "@/lib/participant-category";
 import * as XLSX from "xlsx";
 
 export const ROSTER_FIELDS = [
@@ -282,10 +283,6 @@ export function mergeUnmappedRosterFields(participant: RosterParticipant, existi
   for (const field of ["bib", "chip", "first_name", "last_name", "sex", "rut", "distance", "age", "age_bracket", "category", "team"] as const) {
     if (!fields.has(field)) mergedValues[field] = existingValues[field];
   }
-  if (!fields.has("category") && ["distance", "sex", "age_bracket"].some((field) => fields.has(field as RosterField))) {
-    merged.category = categoryWithGender(existing.category || merged.distance, merged.sex, merged.age_bracket);
-    if (!fields.has("category")) fields.add("category");
-  }
   return { participant: merged, mappedFields: [...fields] };
 }
 
@@ -393,10 +390,11 @@ export function normalizeRosterRows(
     }
 
     const ageBracketText = ageBracketRaw.text;
-    const ageBracket = ageBracketText ? normalizeAgeBracket(ageBracketText) ?? ageBracketText : null;
+    const ageBracket = ageBracketText ? ageGroupValue(ageBracketText) : null;
     if (ageBracketText && /^\d+$/.test(ageBracketText)) {
       issues.push({ level: "warning", message: "El valor numérico no se convirtió en grupo etario; usa la columna Edad si es una edad individual." });
     }
+    if (ageBracketText && !ageBracket) issues.push({ level:"error", message:"Grupo etario inválido: revisa el rango o el código del grupo." });
     const categoryText = categoryRaw.text || null;
     if (categoryText && normalizeAgeBracket(categoryText) && !ageBracket) {
       issues.push({ level: "warning", message: "El valor de categoría parece un grupo etario. Confirma su destino en el mapeo." });
@@ -425,7 +423,7 @@ export function normalizeRosterRows(
       distance,
       age,
       age_bracket: ageBracket,
-      category: categoryWithGender(categoryText || distance, sex, ageBracket),
+      category: categoryText, // Preserve imported text as provenance; it never determines a classification.
       team: teamRaw.text || null,
     };
 

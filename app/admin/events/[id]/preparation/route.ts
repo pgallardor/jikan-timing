@@ -42,7 +42,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const [eventResult, participantsResult, distancesResult, rosterRevisionResult] = await Promise.all([
     supabase.from("events").select("id,name,organizer,timezone,event_date,start_at,status,minimum_rssi,qr_show_name,qr_show_bib,qr_show_category,updated_at,local_operation_status,local_published_revision").eq("id", id).maybeSingle(),
     supabase.from("event_participants").select("id,bib,chip,first_name,last_name,sex,category,team,distance,age,age_bracket,dnf_at,public_token").eq("event_id", id).order("id").range(0, 5000),
-    supabase.from("event_distances").select("distance,official_start_at,started_at,exclude_general_top3_from_categories,award_policy_configured").eq("event_id", id).order("distance"),
+    supabase.from("event_distances").select("distance,official_start_at,started_at,exclude_general_top3_from_categories,award_policy_configured,category_criteria,category_policy_version").eq("event_id", id).order("distance"),
     supabase.from("event_roster_revisions").select("revision_no").eq("event_id", id).order("revision_no", { ascending: false }).limit(1).maybeSingle(),
   ]);
   const queryError = eventResult.error ?? participantsResult.error ?? distancesResult.error ?? rosterRevisionResult.error;
@@ -64,7 +64,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       operation_id: operationData.operation_id,
       source_revision: sourceRevision,
       operator_id: user.id,
-      policy_version: "compat_actual_v1@1",
+      policy_version: "category_criteria_v1@1",
     },
     event: {
       id: event.id,
@@ -85,9 +85,11 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       started_at: distance.started_at,
       exclude_general_top3_from_categories: distance.exclude_general_top3_from_categories,
       award_policy_configured: distance.award_policy_configured,
+      category_criteria: distance.category_criteria,
+      category_policy_version: distance.category_policy_version,
     })),
     participants: participantsResult.data,
-    policy: { preset_id: "compat_actual_v1", revision: "1", award_rules: [] },
+    policy: { preset_id: "category_criteria_v1", revision: "1", award_rules: [] },
   };
   pkg.sha256 = packageHash(pkg);
   const { error: hashError } = await supabase.rpc("record_local_preparation_hash", {

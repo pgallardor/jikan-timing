@@ -22,7 +22,7 @@ import FinishCorrectionsImporter from "@/components/finish-corrections-importer"
 import ParticipantPicker from "@/components/participant-picker";
 import ParticipantActions from "@/components/participant-actions";
 import ParticipantCategoryFields from "@/components/participant-category-fields";
-import { buildCategoryCatalog } from "@/lib/category-options";
+import { ageGroupValue, categoryLabel } from "@/lib/classification";
 import ManualFinishesGrid from "@/components/manual-finishes-grid";
 import RosterImporter from "@/components/roster-importer";
 import EventTransferUploader from "@/components/event-transfer-uploader";
@@ -182,7 +182,8 @@ export default async function EventPage({
   ]);
   if (!event) notFound();
   const operatorToolsDisabled = Boolean(participantChangesError) || event.local_operation_status === "prepared" || event.local_operation_status === "active";
-  const categoryCatalog = buildCategoryCatalog(participantRoster ?? []);
+  const categoryCatalog: Record<string,string[]> = {};
+  for (const p of participantRoster ?? []) { const b=ageGroupValue(p.age_bracket); if (p.distance && b) categoryCatalog[p.distance]=[...new Set([...(categoryCatalog[p.distance] ?? []),b])]; }
   const awardPoliciesReady = Boolean(distances?.length) && distances!.every((distance) => distance.award_policy_configured);
   const people = results ?? [];
   const resultsByParticipantId = new Map(people.map((person) => [person.participant_id, person]));
@@ -509,8 +510,7 @@ export default async function EventPage({
           <input type="hidden" name="event_id" value={id} />
           <label>Dorsal<input name="bib" placeholder="042" /></label><label>Chip / EPC<input name="chip" placeholder="9784" /></label><label>RUT (privado)<input name="rut" placeholder="Opcional" /></label>
           <label>Nombre<input name="first_name" placeholder="Camila" required /></label><label>Apellido<input name="last_name" placeholder="Soto" /></label>
-          <label>Sexo<select name="sex" defaultValue=""><option value="">Sin informar</option><option value="F">Femenino</option><option value="M">Masculino</option><option value="otro">Otro</option></select></label>
-          <ParticipantCategoryFields distances={resultDistances} catalog={categoryCatalog} disabled={operatorToolsDisabled || Boolean(participantRosterError)} /><label>Edad<input name="age" type="number" min="0" max="120" placeholder="Opcional" /></label><label>Grupo etario<input name="age_bracket" placeholder="4 a 8 años / Cat. especial" /></label><label>Equipo<input name="team" placeholder="Club" /></label>
+          <ParticipantCategoryFields distances={resultDistances} catalog={categoryCatalog} disabled={operatorToolsDisabled || Boolean(participantRosterError)} /><label>Edad<input name="age" type="number" min="0" max="120" placeholder="Opcional" /></label><label>Equipo<input name="team" placeholder="Club" /></label>
           <button className="button button-dark" disabled={operatorToolsDisabled || Boolean(participantRosterError)}>Añadir <span aria-hidden="true">+</span></button>
         </form> : <p className="notice">Configura la política de podios por distancia antes de ingresar corredores.</p>}
       </div>
@@ -531,7 +531,7 @@ export default async function EventPage({
           : rosterPeople.length ? rosterPeople.map((person) => <tr key={person.participant_id}>
           <td className="bib-cell">{person.bib || "—"}</td>
           <td className="person-cell"><strong>{person.first_name}</strong><small>{person.team || person.sex || " "}</small></td><td>{person.last_name || "—"}</td>
-          <td>{person.chip || <span className="muted">Sin chip</span>}</td><td>{person.age ?? "—"}</td><td>{person.category || "—"}</td>
+          <td>{person.chip || <span className="muted">Sin chip</span>}</td><td>{person.age ?? "—"}</td><td>{categoryLabel(person) ?? "Sin categoría: completa sexo y grupo etario"}</td>
           <td><span className={"result-tag " + (person.result_status === "FINALIZÓ" ? "result-finalizó" : person.result_status === "EN CARRERA" ? "result-en-carrera" : person.result_status === "DNF" ? "result-dnf" : "")}>{person.result_status}</span></td>
           <td><ParticipantActions eventId={id} person={{ id: person.id, bib: person.bib, chip: person.chip, first_name: person.first_name, last_name: person.last_name, sex: person.sex, rut: person.rut, distance: person.distance, age: person.age, age_bracket: person.age_bracket, category: person.category, team: person.team, dnf_at: person.dnf_at }} distances={resultDistances} categoryCatalog={categoryCatalog} finishAt={person.finish_at} timeZone={event.timezone} disabled={operatorToolsDisabled} /></td>
           <td><TimeCell value={person.start_at} origin={person.start_origin} timeZone={event.timezone} /></td>
@@ -545,7 +545,7 @@ export default async function EventPage({
     <section className="settings-grid" id="configuracion" data-event-tab-panel="settings" hidden>
       <div className="panel"><div className="panel-heading"><div><p className="eyebrow">POLÍTICA DEL EVENTO</p><h2>Podios por distancia</h2></div></div>
         <div className="panel-body">
-          <p className="setting-caption">Elige en cada distancia si los tres primeros de la general de cada sexo participan también en los podios de categoría y grupo etario. Con exclusión activa, esos puestos pasan a los siguientes corredores elegibles.</p>
+          <p className="setting-caption">Las categorías se calculan por sexo y grupo etario. Elige en cada distancia si los tres primeros de la general de cada sexo participan también en los podios de categoría y grupo etario. Con exclusión activa, esos puestos pasan a los siguientes corredores elegibles.</p>
           {(distances ?? []).map((distance) => <form action={updateDistanceAwardPolicyAction} className="settings-form distance-policy-row" key={distance.distance}>
             <input type="hidden" name="event_id" value={id} /><input type="hidden" name="distance" value={distance.distance} />
             <label>{distance.distance}<select name="exclude_general_top3_from_categories" defaultValue={distance.exclude_general_top3_from_categories ? "true" : "false"} required disabled={event.local_operation_status === "prepared" || event.local_operation_status === "active"}>

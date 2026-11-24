@@ -40,6 +40,13 @@ El comando final aplica únicamente las migraciones locales que faltan en el pro
 
 ## Esquema actual de este proyecto
 
+### Categorías por criterios — 202611230001, aplicada en producción
+
+La rama `codex/category-criteria-synthetic` incorpora criterios `(sex, age_bracket)` por distancia, categoría calculada en vistas/RPC y puestos independientes del nombre importado. Conserva la exclusión y DNF, invalida snapshots y versiona el intercambio como `category_criteria_v1@1`. Retira el trigger que escribía categoría por sexo y la inferencia de distancia desde el nombre. El PDF consume los puestos oficiales. La consulta de resultados limita el cálculo al evento solicitado. Las pruebas de publicación también detectaron y corrigieron que el alta de un evento autónomo usaba una fila vacía en lugar de los datos del paquete.
+
+Se ensayó en la base sintética y en una copia sin red de los datos actuales de producción. Se verificó el rollback de todos los datos/resultados anteriores. La migración usa `BEGIN/COMMIT` explícitos y rechaza preparaciones locales pendientes. Con autorización del operador se liberó la preparación antigua de GTVUT 2026 antes de aplicar el esquema. Producción conserva 1681 participantes y 1953 marcas; 149 grupos etarios se recuperaron mediante una conversión única y auditada en `category_criteria_conversion_audit`. Los 34 casos sin información suficiente pertenecen a eventos cancelados. El original `crono-local` no se modificó. Consulta `DEPLOY_CATEGORY_CRITERIA.md` para validación y reversión.
+
+
 ### Exclusión de la general en categorías — migración 202611220004
 
 `202611220004_exclude_general_from_all_categories.sql` aplica la política de exclusión del top 3 general a todas las categorías, aunque `age_bracket` esté vacío o la edad solo figure en el nombre de la categoría. Los siguientes elegibles ascienden de puesto; los empates de la general se excluyen por rango, siempre dentro de su distancia y sexo. Conserva la exclusión de DNF y los permisos de las funciones. Invalida los snapshots existentes para recalcular el standing público; no modifica participantes, marcas ni la política configurada de ningún evento.

@@ -17,7 +17,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   // Fetch every result; do not silently truncate at Supabase's default row limit.
   for (let offset = 0; ; offset += 500) {
     const { data, error } = await supabase.from("event_results")
-      .select("participant_id,bib,first_name,last_name,team,distance,sex,category,age_bracket,result_status,elapsed_seconds,overall_place")
+      .select("participant_id,bib,first_name,last_name,team,distance,sex,category,age_bracket,result_status,elapsed_seconds,overall_place,category_place")
       .eq("event_id", id).order("participant_id").range(offset, offset + 499);
     if (error) return new Response("No se pudieron exportar los podios", { status: 500 });
     participants.push(...(data ?? []));

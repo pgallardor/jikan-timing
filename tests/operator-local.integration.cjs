@@ -15,24 +15,21 @@ require.extensions[".ts"] = (module, filename) => module._compile(ts.transpileMo
 const { prepareManualFinishes } = require("../lib/manual-finishes.ts");
 const { buildPodiumGroups } = require("../lib/podium-export.ts");
 
-const env = Object.fromEntries(fs.readFileSync(path.join(__dirname, "../.env.local"), "utf8").split(/\r?\n/).filter((line) => /^[A-Z_]+=/.test(line)).map((line) => {
-  const i = line.indexOf("="); return [line.slice(0, i), line.slice(i + 1).trim().replace(/^['"]|['"]$/g, "")];
-}));
-const url = env.NEXT_PUBLIC_SUPABASE_URL;
-const key = env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+const url = process.env.OPERATOR_SUPABASE_URL;
+const key = process.env.OPERATOR_SUPABASE_KEY;
 const appUrl = process.env.OPERATOR_LOCAL_APP_URL || "http://127.0.0.1:3100";
 for (const target of [url, appUrl]) {
   const parsed = new URL(target);
   assert.ok(["127.0.0.1", "localhost", "[::1]"].includes(parsed.hostname), "Integration tests must never target a remote host");
 }
-assert.equal(new URL(url).port, "54321", "Use this project's local Supabase instance");
+assert.equal(new URL(url).port, "55421", "Use this project's local Supabase instance");
 const output = path.join(__dirname, "../local-backups/operator-qa");
 fs.mkdirSync(output, { recursive: true });
 const report = { startedAt: new Date().toISOString(), targets: { supabase: url, web: appUrl }, checks: [] };
 const fields = ["bib", "chip", "first_name", "last_name", "sex", "rut", "distance", "age", "age_bracket", "category", "team", "dnf_at"];
 const expected = (p) => Object.fromEntries(fields.map((field) => [field, p[field]]));
 const valueFields = (p) => Object.fromEntries(fields.filter((field) => field !== "dnf_at").map((field) => [field, p[field]]));
-const sql = (text) => execFileSync("docker", ["exec", "supabase_db_crono-local", "psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres", "-At", "-c", text], { encoding: "utf8", windowsHide: true }).trim();
+const sql = (text) => execFileSync("docker", ["exec", "supabase_db_crono-criteria-synthetic", "psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres", "-At", "-c", text], { encoding: "utf8", windowsHide: true }).trim();
 const unwrap = (result) => { assert.equal(result.error, null, result.error?.message); return result.data; };
 const actionIds = new Map();
 for (const filename of fs.readdirSync(path.join(__dirname, "../.next/static/chunks/app/admin/events/[id]"))) {
@@ -69,7 +66,7 @@ test("local operator integration", { timeout: 300_000 }, async (t) => {
     await t.test(name, async () => {
       const start = performance.now();
       try { await callback(); report.checks.push({ name, passed: true, milliseconds: Math.round(performance.now() - start) }); }
-      catch (error) { report.checks.push({ name, passed: false, error: error.message }); throw error; }
+      catch (error) { report.checks.push({ name, passed: false, error: error.message }); fs.writeFileSync(path.join(output,"report.json"),JSON.stringify(report,null,2)); throw error; }
     });
   }
   const owner = await account();
@@ -139,40 +136,20 @@ test("local operator integration", { timeout: 300_000 }, async (t) => {
     assert.ok(!html.includes("Estarán deshabilitadas hasta"));
     assert.ok(!html.includes("La vista de resultados no coincide"));
   });
-  await check("category selects offer distance-specific choices and save existing/new/none without duplicates", async () => {
-    const catalogEvent = unwrap(await owner.client.from("events").insert({ owner_id: owner.id, name: "QA local · Categorías", slug: "qa-tools-" + randomUUID(), event_date: "2026-11-22", timezone: "America/Santiago" }).select().single());
-    unwrap(await owner.client.from("event_distances").insert(["10KM", "5KM"].map((distance) => ({ event_id: catalogEvent.id, distance, award_policy_configured: true }))));
-    unwrap(await owner.client.from("event_participants").insert([
-      { event_id: catalogEvent.id, bib: "C001", first_name: "Catálogo", sex: "M", distance: "10KM", category: "Élite Varones · 30 a 39 años", age_bracket: "30 a 39 años" },
-      { event_id: catalogEvent.id, bib: "C002", first_name: "Catálogo", sex: "M", distance: "5KM", category: "Juvenil Varones", age_bracket: null },
-    ]));
-    const response = await fetch(`${appUrl}/admin/events/${catalogEvent.id}`, { headers: { Cookie: owner.cookie() } });
-    assert.equal(response.status, 200);
-    const addForm = (await response.text()).match(/<form\b[^>]*class="participant-form"[^>]*>[\s\S]*?<\/form>/)?.[0];
-    assert.ok(addForm.includes('name="category_choice"'));
-    assert.ok(addForm.includes("Crear otra categoría"));
-    assert.ok(addForm.includes("Élite Varones"));
-    assert.ok(!addForm.includes("Juvenil Varones"), "The default 10KM select must exclude 5KM categories");
-    async function add(bib, choice, newCategory = "") {
-      return formAction("addParticipantAction", { event_id: catalogEvent.id, bib, first_name: "Prueba categoría", sex: "M", distance: "10KM", age_bracket: "30 a 39 años", category_choice: choice, new_category: newCategory });
-    }
-    const get = async (bib) => unwrap(await owner.client.from("event_participants").select("*").eq("event_id", catalogEvent.id).eq("bib", bib).single());
-    assert.ok((await add("C003", "existing:" + encodeURIComponent("Élite Varones"))).searchParams.has("ok"));
-    assert.equal((await get("C003")).category, "Élite Varones · 30 a 39 años");
-    assert.ok((await add("C004", "new", "Promocional")).searchParams.has("ok"));
-    assert.equal((await get("C004")).category, "Promocional Varones · 30 a 39 años");
-    assert.ok((await add("C005", "new", "  élite  ")).searchParams.has("ok"));
-    assert.equal((await get("C005")).category, "Élite Varones · 30 a 39 años");
-    assert.ok((await add("C006", "")).searchParams.has("ok"));
-    assert.equal((await get("C006")).category, "Varones · 30 a 39 años");
-    assert.match((await add("C007", "existing:" + encodeURIComponent("Juvenil Varones"))).searchParams.get("error"), /esta distancia/);
-    assert.match((await add("C008", "new", "   ")).searchParams.get("error"), /120/);
-    const person = await get("C003");
-    const updated = await formAction("changeParticipantAction", { event_id: catalogEvent.id, participant_id: person.id, operation: "update", expected: JSON.stringify(expected(person)), ...valueFields(person), category_choice: "existing:" + encodeURIComponent("Promocional Varones"), reason: "Cambio de categoría desde el select" });
-    assert.ok(updated.searchParams.has("ok"), updated.searchParams.get("error"));
-    assert.equal((await get("C003")).category, "Promocional Varones · 30 a 39 años");
-    const refreshed = await (await fetch(`${appUrl}/admin/events/${catalogEvent.id}`, { headers: { Cookie: owner.cookie() } })).text();
-    assert.ok(refreshed.includes('value="existing:Promocional%20Varones"'));
+  await check("web forms save criteria, ignore supplied category names and recalculate on edit", async () => {
+    const target=unwrap(await owner.client.from("events").insert({owner_id:owner.id,name:"QA criterios",slug:"qa-tools-"+randomUUID(),event_date:"2026-11-23"}).select().single());
+    unwrap(await owner.client.from("event_distances").insert({event_id:target.id,distance:"10KM",award_policy_configured:true}));
+    const html=await (await fetch(appUrl+"/admin/events/"+target.id,{headers:{Cookie:owner.cookie()}})).text();
+    assert.ok(html.includes("Categoría calculada"));assert.ok(!html.includes('name="category_choice"'));
+    const added=await formAction("addParticipantAction",{event_id:target.id,bib:"C001",first_name:"Sintética",sex:"F",distance:"10KM",age_bracket:"30-39",category:"Nombre que debe ignorarse"});
+    assert.ok(added.searchParams.has("ok"),added.searchParams.get("error"));
+    const get=async()=>unwrap(await owner.client.from("event_participants").select("*").eq("event_id",target.id).eq("bib","C001").single());
+    let p=await get();assert.equal(p.age_bracket,"30 a 39 años");
+    let r=unwrap(await owner.client.from("event_results").select("*").eq("event_id",target.id).single());assert.equal(r.category,"Damas · 30 a 39 años");
+    const updated=await formAction("changeParticipantAction",{event_id:target.id,participant_id:p.id,operation:"update",expected:JSON.stringify(expected(p)),...valueFields(p),sex:"M",age_bracket:"40–49",category:"Texto arbitrario",reason:"Reclasificación sintética"});
+    assert.ok(updated.searchParams.has("ok"),updated.searchParams.get("error"));
+    r=unwrap(await owner.client.from("event_results").select("*").eq("event_id",target.id).single());assert.equal(r.category,"Varones · 40 a 49 años");
+    const invalid=await formAction("addParticipantAction",{event_id:target.id,bib:"C002",first_name:"Inválida",sex:"F",distance:"10KM",age_bracket:"50-30"});assert.ok(invalid.searchParams.has("error"));
   });
   await check("native web form edits stable participant and creates roster revision/audit", async () => {
     const before = await participant("001");
@@ -222,13 +199,13 @@ test("local operator integration", { timeout: 300_000 }, async (t) => {
     const policy = unwrap(await owner.client.from("event_distances").select("*").eq("event_id", event.id));
     const groups = buildPodiumGroups(await results(), policy);
     assert.equal(groups.length, 4);
-    assert.ok(groups.every((group) => group.type !== "Categoría"));
+    assert.ok(groups.every((group) => ["General","Categoría"].includes(group.type)));
     const male = groups.filter((g) => g.distance === "10KM");
     assert.deepEqual(male.find((g) => g.type === "General").rows.map((r) => r.place), [1, 2, 3, 3]);
-    assert.deepEqual(male.find((g) => g.type === "Grupo etario").rows.map((r) => r.bib), ["005", "006"]);
+    assert.deepEqual(male.find((g) => g.type === "Categoría").rows.map((r) => r.bib), ["005", "006"]);
     assert.ok(groups.some((g) => g.distance === "5KM" && g.sex === "Damas"));
   });
-  await check("general exclusion works for age labels without metadata in SQL, public standings and PDF", async () => {
+  await check("missing criteria are explicit; filling fields classifies and promotes consistently in SQL, public standing and PDF", async () => {
     const target = unwrap(await owner.client.from("events").insert({ owner_id:owner.id,name:"QA local · Exclusión de categorías",slug:"qa-tools-"+randomUUID(),event_date:"2026-11-22",timezone:"America/Santiago",status:"open" }).select().single());
     unwrap(await owner.client.from("event_distances").insert({ event_id:target.id,distance:"10KM",award_policy_configured:true,exclude_general_top3_from_categories:true }));
     const inputs = [["200",5400,"30 a 39 años"],["201",7200,"30 a 39 años"],["210",7270,"50 a 59 años"],["211",7272,"50 a 59 años"],["212",7275,"50 a 59 años"]];
@@ -238,6 +215,9 @@ test("local operator integration", { timeout: 300_000 }, async (t) => {
     for (const [bib,seconds] of inputs) unwrap(await owner.client.rpc("record_manual_entry",{ p_event_id:target.id,p_participant_id:roster.find((p) => p.bib===bib).id,p_stage:"finish",p_captured_at:new Date(Date.parse(start)+seconds*1000).toISOString(),p_reason:"Llegada de prueba de categoría" }));
     const getResults = async () => unwrap(await owner.client.from("event_results").select("*").eq("event_id",target.id));
     let ranked = await getResults();
+    assert.ok(ranked.every(p=>p.category_place===null && p.category===null));
+    for(const [bib,,bracket] of inputs) unwrap(await owner.client.from("event_participants").update({age_bracket:bracket}).eq("event_id",target.id).eq("bib",bib));
+    ranked=await getResults();
     for (const bib of ["200","201","210"]) assert.equal(ranked.find((p) => p.bib===bib).category_place,null);
     assert.equal(Number(ranked.find((p) => p.bib==="211").category_place),1);
     assert.equal(Number(ranked.find((p) => p.bib==="212").category_place),2);
@@ -389,6 +369,45 @@ test("local operator integration", { timeout: 300_000 }, async (t) => {
     assert.equal((await anon.rpc("record_manual_finishes_batch", { p_event_id: event.id, p_rows: [row] })).error?.code, "42501");
     const unauth = await fetch(`${appUrl}/admin/events/${event.id}`, { redirect: "manual" }); assert.ok([303, 307].includes(unauth.status));
   });
+
+  await check("criteria produce identical SQL, PDF and offline ranks despite names, edits and ties", async()=>{
+    const target=unwrap(await owner.client.from("events").insert({owner_id:owner.id,name:"QA matrices sintéticas",slug:"qa-tools-"+randomUUID(),event_date:"2026-11-23",status:"open"}).select().single());
+    unwrap(await owner.client.from("event_distances").insert(["10KM","5KM"].map(distance=>({event_id:target.id,distance,award_policy_configured:true}))));
+    const roster=unwrap(await owner.client.from("event_participants").insert(Array.from({length:12},(_,i)=>({event_id:target.id,bib:"S"+i,chip:"SYN"+i,first_name:"Sintético "+i,distance:i===11?"5KM":"10KM",sex:i===10?null:i===9?"F":"M",age_bracket:i===8?null:i===7?"40–49":i%2?"30-39":"30 a 39 años",category:i%2?"Categoría histórica A":"Categoría histórica B"}))).select());
+    for(const distance of ["10KM","5KM"]) unwrap(await owner.client.rpc("record_distance_start_manually",{p_event_id:target.id,p_distance:distance,p_captured_at:"2026-11-23T12:00:00Z",p_reason:"Salida sintética",p_confirm_replace:false}));
+    for(let i=0;i<roster.length;i++) unwrap(await owner.client.rpc("record_manual_entry",{p_event_id:target.id,p_participant_id:roster[i].id,p_stage:"finish",p_captured_at:new Date(Date.parse("2026-11-23T12:00:00Z")+[10,20,30,30,50,60,70,80,90,100,110,120][i]*1000).toISOString(),p_reason:"Llegada sintética"}));
+    const verify=async(excluded)=>{
+      const rows=unwrap(await owner.client.from("event_results").select("*").eq("event_id",target.id));
+      const bridge=JSON.parse(execFileSync("dotnet",[path.resolve(__dirname,"../../RFIDLocal/bin/CriteriaQA/CriteriaBridge.dll")],{input:JSON.stringify({participants:rows,exclusionDistances:excluded}),encoding:"utf8",windowsHide:true}));
+      for(const row of rows){const local=bridge.find(p=>p.participant_id===row.participant_id);assert.equal(local.category,row.category);assert.equal(local.category_place,row.category_place);assert.equal(local.overall_place,row.overall_place);assert.equal(local.status,row.result_status);}
+      const groups=buildPodiumGroups(rows,[]); for(const group of groups)for(const p of group.rows){const official=rows.find(r=>r.bib===p.bib);assert.equal(p.place,group.type==="General"?official.overall_place:official.category_place);}
+      return rows;
+    };
+    const before=await verify([]);assert.equal(new Set(before.filter(r=>r.sex==="M"&&r.age_bracket==="30 a 39 años"&&r.distance==="10KM").map(r=>r.category_key)).size,1);
+    const renamed=roster[0];unwrap(await owner.client.from("event_participants").update({category:"Otro nombre completamente distinto"}).eq("id",renamed.id));
+    const after=await verify([]);assert.deepEqual(after.map(r=>[r.participant_id,r.category_place]).sort(),before.map(r=>[r.participant_id,r.category_place]).sort());
+    const reviewed=unwrap(await owner.client.from("event_participants").select("*").eq("id",renamed.id).single());
+    const edited=await formAction("changeParticipantAction",{event_id:target.id,participant_id:reviewed.id,operation:"update",expected:JSON.stringify(expected(reviewed)),...valueFields(reviewed),age_bracket:"40-49",reason:"Reclasificar después de llegada"});assert.ok(edited.searchParams.has("ok"),edited.searchParams.get("error"));
+    const changed=await verify([]);assert.equal(changed.find(r=>r.participant_id===reviewed.id).finish_at,before.find(r=>r.participant_id===reviewed.id).finish_at);
+    unwrap(await owner.client.from("event_distances").update({exclude_general_top3_from_categories:true}).eq("event_id",target.id));const excluded=await verify(["10KM","5KM"]);
+    assert.ok(excluded.filter(r=>r.overall_place<=3).every(r=>r.category_place===null));
+    const publicRows=unwrap(await anon.rpc("get_public_event_standing",{p_event_slug:target.slug}));for(const row of excluded)assert.equal(publicRows.find(p=>p.bib===row.bib).category_place,row.category_place);
+    assert.equal((await owner.client.from("event_distances").update({category_criteria:["sex","circuit","age_bracket"]}).eq("event_id",target.id)).error?.code,"23514");
+  });
+  await check("D07 publishes the offline criteria snapshot and rejects old or mismatching policies atomically",async()=>{
+    const {packageHash}=require("../lib/d07-transfer.ts");
+    const eventId=randomUUID(),start="2026-11-23T12:00:00.000Z";
+    const participants=Array.from({length:6},(_,i)=>({id:randomUUID(),bib:"D"+i,chip:"SYN-D"+i,first_name:"Intercambio",last_name:"Sintético "+i,distance:"10KM",sex:"F",age_bracket:i%2?"30-39":"30 a 39 años",category:i%2?"Nombre A":"Nombre B"}));
+    const rows=participants.map((p,i)=>({...p,participant_id:p.id,start_at:start,finish_at:new Date(Date.parse(start)+(100+i)*1000).toISOString(),result_status:"FINALIZÓ"}));
+    const offline=JSON.parse(execFileSync("dotnet",[path.resolve(__dirname,"../../RFIDLocal/bin/CriteriaQA/CriteriaBridge.dll")],{input:JSON.stringify({participants:rows,exclusionDistances:["10KM"]}),encoding:"utf8",windowsHide:true}));
+    const pkg={format:"yr-event-transfer",version:1,kind:"publication",manifest:{transfer_id:randomUUID(),revision:1,source_revision:"synthetic-1"},event:{id:eventId,name:"Intercambio sintético",minimum_rssi:-70,event_date:"2026-11-23",timezone:"America/Santiago",status:"open"},policy:{preset_id:"category_criteria_v1",revision:"1"},distances:[{distance:"10KM",award_policy_configured:true,exclude_general_top3_from_categories:true,category_criteria:["sex","age_bracket"],category_policy_version:"category_criteria_v1"}],participants,marks:rows.flatMap(p=>["start","finish"].map(stage=>({participant_id:p.id,stage,captured_at:p[stage+"_at"],origin:"manual"}))),operations:[],receipts:[],history:[],expected_results:rows.map(p=>({participant_id:p.id,status:"FINALIZÓ",start_at:p.start_at,finish_at:p.finish_at,overall_place:offline.find(r=>r.participant_id===p.id).overall_place,category_place:offline.find(r=>r.participant_id===p.id).category_place}))};
+    const send=async p=>owner.client.rpc("apply_event_transfer",{p_package:{...p,sha256:packageHash(p)},p_mode:"commit",p_final:false,p_target_event_id:null});
+    assert.equal((await send({...pkg,policy:{preset_id:"compat_actual_v1",revision:"1"}})).error?.code,"22023");
+    const wrong=structuredClone(pkg);wrong.expected_results[4].category_place=99;assert.equal((await send(wrong)).error?.code,"40001");
+    assert.equal(unwrap(await owner.client.from("events").select("id").eq("id",eventId)).length,0,"Mismatch must roll back entire event");
+    unwrap(await send(pkg));const published=unwrap(await owner.client.from("event_results").select("*").eq("event_id",eventId));assert.equal(published.length,6);
+    for(const p of published)assert.equal(p.category_place,offline.find(r=>r.participant_id===p.participant_id).category_place);
+  });
   await check("5000-row web batch and paginated PDF export complete without truncation", async () => {
     const large = unwrap(await owner.client.from("events").insert({ owner_id: owner.id, name: "QA local · 5000 llegadas", slug: "qa-tools-" + randomUUID(), timezone: "America/Santiago", event_date: "2026-11-22", status: "open" }).select().single());
     unwrap(await owner.client.from("event_distances").insert({ event_id: large.id, distance: "10KM", award_policy_configured: true, exclude_general_top3_from_categories: true }));
@@ -406,7 +425,9 @@ test("local operator integration", { timeout: 300_000 }, async (t) => {
     const rows = people.map((person, index) => ({ participant_id: person.id, expected_start_at: start, expected_finish_at: null, input: elapsed(person.bib, `${Math.floor((100 + index) / 60)}:${String((100 + index) % 60).padStart(2, "0")}.250`) }));
     const redirect = await formAction("recordManualFinishesBatchAction", { event_id: large.id, rows: JSON.stringify(rows), reason: "Prueba masiva de 5000 llegadas" });
     assert.ok(redirect.searchParams.has("ok"), redirect.searchParams.get("error"));
+    const countStarted=performance.now();
     const count = await owner.client.from("event_results").select("participant_id", { count: "exact", head: true }).eq("event_id", large.id).eq("result_status", "FINALIZÓ");
+    report.count5000Milliseconds=Math.round(performance.now()-countStarted);
     unwrap(count); assert.equal(count.count, 5000);
     const finishAudits = await owner.client.from("timing_entry_audit").select("id", { count: "exact", head: true }).eq("event_id", large.id).eq("stage", "finish");
     unwrap(finishAudits); assert.equal(finishAudits.count, 5000);

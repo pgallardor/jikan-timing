@@ -8,6 +8,7 @@ type PublicStandingRow = {
   participant_name: string | null;
   bib: string | null;
   category: string | null;
+  category_key: string | null;
   distance: string | null;
   sex: string | null;
   result_status: string | null;
@@ -36,23 +37,6 @@ function raceGroupKey(distance: string | null, sex: string | null) {
   return JSON.stringify([distance ?? "", sex ?? ""]);
 }
 
-function subcategoryLabel(category: string | null) {
-  if (!category?.trim()) return null;
-
-  const label = category
-    .replace(/\b\d+(?:[.,]\d+)?\s*(?:kms?|k|metros?|m)\b/giu, " ")
-    .replace(/(^|[^\p{L}\p{N}])(?:f|fem|femenin[oa]|mujer(?:es)?|female|woman|women|señora|niña|damas?|m|masc|masculin[oa]|h|hombres?|var[oó]n(?:es)?|male|man|men|señor|niño)(?=$|[^\p{L}\p{N}])/giu, "$1")
-    .replace(/[|/]+/g, " · ")
-    .replace(/[;,]+/g, " ")
-    .replace(/[—–]+/g, "-")
-    .replace(/\s*·\s*/g, " · ")
-    .replace(/^\s*[·-]\s*|\s*[·-]\s*$/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  return label || "General";
-}
-
 export default function PublicStandingTable({ participants }: { participants: PublicStandingRow[] }) {
   const [query, setQuery] = useState("");
   const [selectedRaceGroup, setSelectedRaceGroup] = useState("");
@@ -75,16 +59,14 @@ export default function PublicStandingTable({ participants }: { participants: Pu
   const categoryParticipants = selectedGroup
     ? participants.filter((person) => raceGroupKey(normalizeDistance(person.distance ?? ""), person.sex) === selectedGroup.key)
     : participants;
-  const categories = useMemo(() => [...new Set(
-    categoryParticipants.map((person) => subcategoryLabel(person.category)).filter((category): category is string => Boolean(category)),
-  )].sort((left, right) => left.localeCompare(right, "es-CL", { sensitivity: "base", numeric: true })), [categoryParticipants]);
-  const hasUncategorized = categoryParticipants.some((person) => !subcategoryLabel(person.category));
+  const categories = useMemo(() => [...new Map(categoryParticipants.filter((p) => p.category_key).map((p) => [p.category_key!, { key:p.category_key!, label:p.category ?? "Categoría" }])).values()].sort((a,b) => a.label.localeCompare(b.label,"es-CL")), [categoryParticipants]);
+  const hasUncategorized = categoryParticipants.some((p) => !p.category_key);
   const filtered = useMemo(() => {
     const needle = normalize(query.trim());
     return participants.filter((person) => {
       if (selectedRaceGroup && raceGroupKey(normalizeDistance(person.distance ?? ""), person.sex) !== selectedRaceGroup) return false;
-      if (selectedCategory === UNCATEGORIZED && subcategoryLabel(person.category)) return false;
-      if (selectedCategory && selectedCategory !== UNCATEGORIZED && subcategoryLabel(person.category) !== selectedCategory) return false;
+      if (selectedCategory === UNCATEGORIZED && person.category_key) return false;
+      if (selectedCategory && selectedCategory !== UNCATEGORIZED && person.category_key !== selectedCategory) return false;
       if (!needle) return true;
       return normalize([
         person.participant_name,
@@ -118,7 +100,7 @@ export default function PublicStandingTable({ participants }: { participants: Pu
         <span>Filtrar subcategoría</span>
         <select value={selectedCategory} onChange={(event) => setSelectedCategory(event.target.value)} aria-label="Filtrar por subcategoría">
           <option value="">Todas las subcategorías</option>
-          {categories.map((category) => <option key={category} value={category}>{category}</option>)}
+          {categories.map((category) => <option key={category.key} value={category.key}>{category.label}</option>)}
           {hasUncategorized && <option value={UNCATEGORIZED}>Sin subcategoría</option>}
         </select>
       </label>

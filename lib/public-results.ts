@@ -10,6 +10,8 @@ export type PublicStandingRow = {
   participant_name: string | null;
   bib: string | null;
   category: string | null;
+  category_key: string | null;
+  age_bracket: string | null;
   distance: string | null;
   sex: string | null;
   result_status: string | null;
@@ -41,7 +43,7 @@ export async function getCachedPublicEventStanding(eventSlug: string) {
     const { data, error } = await supabase.rpc("get_public_event_standing", { p_event_slug: eventSlug });
     if (error) throw error;
     return (data ?? []) as PublicStandingRow[];
-  }, ["public-event-standing-v1", eventSlug], {
+  }, ["public-event-standing-criteria-v1", eventSlug], {
     tags: [publicResultsCacheTag(eventSlug)],
     revalidate: PUBLIC_RESULTS_CACHE_SECONDS,
   });

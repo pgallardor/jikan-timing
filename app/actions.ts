@@ -20,9 +20,9 @@ import {
   type RosterImportRow,
   type RosterMapping,
 } from "@/lib/roster-import";
-import { categoryWithGender, normalizeDistance, normalizeParticipantSex } from "@/lib/participant-category";
+import { normalizeDistance, normalizeParticipantSex } from "@/lib/participant-category";
 import { prepareManualFinishes } from "@/lib/manual-finishes";
-import { buildCategoryCatalog, categoryAfterDistanceChange, participantBaseCategory, resolveCategoryChoice } from "@/lib/category-options";
+import { ageGroupValue } from "@/lib/classification";
 
 async function signedInClient() {
   const supabase = await createClient();
@@ -33,25 +33,6 @@ async function signedInClient() {
 
 function eventPath(eventId: string) {
   return "/admin/events/" + eventId;
-}
-
-async function categoryFromParticipantForm(supabase: Awaited<ReturnType<typeof createClient>>, eventId: string, formData: FormData, distance: string | null, sex: ReturnType<typeof normalizeParticipantSex>, bracket: string | null) {
-  // Preserve compatibility with existing import/HTTP clients that submit category directly.
-  if (!formData.has("category_choice")) return categoryWithGender(String(formData.get("category") ?? "").trim() || distance, sex, bracket);
-  const choice = String(formData.get("category_choice") ?? "");
-  if (!choice) return categoryWithGender(null, sex, bracket);
-  const { data, error } = await supabase.from("event_participants").select("distance,category,age_bracket").eq("event_id", eventId).range(0, 4999);
-  if (error) notice(eventPath(eventId), "error", "No se pudieron consultar las categorías de la nómina. Vuelve a intentarlo.");
-  const options = buildCategoryCatalog(data ?? [])[distance ?? ""] ?? [];
-  try {
-    const category = resolveCategoryChoice(choice, String(formData.get("new_category") ?? ""), options);
-    if (category === null) return categoryWithGender(null, sex, bracket);
-    const formatted = categoryWithGender(category, sex, bracket);
-    const existing = categoryAfterDistanceChange(participantBaseCategory(formatted, bracket), options);
-    return existing ? categoryWithGender(existing, sex, bracket) : formatted;
-  } catch (cause) {
-    notice(eventPath(eventId), "error", cause instanceof Error ? cause.message : "Categoría inválida.");
-  }
 }
 
 async function invalidatePublicResults(supabase: Awaited<ReturnType<typeof createClient>>, eventId: string) {
@@ -251,8 +232,10 @@ export async function addParticipantAction(formData: FormData) {
   const rawAge = String(formData.get("age") ?? "").trim();
   const age = rawAge ? Number(rawAge) : null;
   if (rawAge && (!/^\d{1,3}$/.test(rawAge) || age! > 120)) notice(eventPath(eventId), "error", "La edad debe ser un entero entre 0 y 120.");
-  const bracket = String(formData.get("age_bracket") ?? "").trim() || null;
-  const category = await categoryFromParticipantForm(supabase, eventId, formData, distance, sex, bracket);
+  const rawBracket = String(formData.get("age_bracket") ?? "").trim();
+  const bracket = ageGroupValue(rawBracket);
+  if (rawBracket && !bracket) notice(eventPath(eventId), "error", "Grupo etario inválido. Revisa el rango de edad.");
+  const category = null; // Display category is calculated by event_results, never supplied by the form.
   const person = {
     participant_id: null,
     bib: String(formData.get("bib") ?? "").trim() || null,
@@ -321,8 +304,10 @@ export async function changeParticipantAction(formData: FormData) {
     if (rawAge && (!/^\d{1,3}$/.test(rawAge) || Number(rawAge) > 120)) notice(eventPath(eventId), "error", "La edad debe ser un entero entre 0 y 120.");
     const firstName = String(formData.get("first_name") ?? "").trim();
     if (!firstName || firstName.length > 100 || !distance) notice(eventPath(eventId), "error", "Indica nombre (hasta 100 caracteres) y distancia.");
-    const bracket = String(formData.get("age_bracket") ?? "").trim() || null;
-    const category = await categoryFromParticipantForm(supabase, eventId, formData, distance, sex, bracket);
+    const rawBracket = String(formData.get("age_bracket") ?? "").trim();
+  const bracket = ageGroupValue(rawBracket);
+  if (rawBracket && !bracket) notice(eventPath(eventId), "error", "Grupo etario inválido. Revisa el rango de edad.");
+    const category = null; // Display category is calculated by event_results, never supplied by the form.
     values = {
       bib: String(formData.get("bib") ?? "").trim() || null,
       chip: String(formData.get("chip") ?? "").replace(/\s/g, "").toUpperCase() || null,

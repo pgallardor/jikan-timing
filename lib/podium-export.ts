@@ -1,11 +1,11 @@
-import { categoryWithGender, normalizeAgeBracket, normalizeDistance, normalizeParticipantSex } from "./participant-category";
-import { participantBaseCategory } from "./category-options";
+import { normalizeDistance } from "./participant-category";
+import { categoryIdentity, ageGroupValue } from "./classification";
 import { participantDisplayName } from "./format";
 
 export type PodiumCandidate = {
   participant_id: string; bib: string | null; first_name: string; last_name: string | null; team: string | null;
   distance: string | null; sex: string | null; category: string | null; age_bracket: string | null;
-  result_status: string; elapsed_seconds: number | string | null; overall_place: number | null;
+  result_status: string; elapsed_seconds: number | string | null; overall_place: number | null; category_place: number | null;
 };
 export type PodiumPolicy = { distance: string; award_policy_configured: boolean; exclude_general_top3_from_categories: boolean };
 export type PodiumRow = { place: number; bib: string; name: string; team: string; time: string };
@@ -13,18 +13,6 @@ export type PodiumGroup = { distance: string; type: "General" | "Categoría" | "
 const collate = (a: string, b: string) => a.localeCompare(b, "es-CL", { numeric: true, sensitivity: "base" });
 const key = (...parts: string[]) => JSON.stringify(parts.map((part) => part.trim().toLocaleUpperCase("es-CL")));
 const sexLabel = (sex: string | null) => sex === "F" ? "Damas" : sex === "M" ? "Varones" : sex === "otro" ? "Otro" : "Sin informar";
-
-function isGeneralCategory(category: string, distance: string | null, sex: string | null) {
-  let base = category;
-  if (sex === "F" || sex === "M") {
-    base = (categoryWithGender(category, sex) ?? "").replace(/(?:^|\s)(?:Damas|Varones)$/, "").trim();
-  } else {
-    base = base.replace(/(^|\s)(?:otro|otra|no[_\s]informado|sin\s+informar|sin\s+sexo)(?=\s|$)/gi, " ").trim();
-  }
-  base = base.replace(/(^|\s)general(?=\s|$)/gi, " ").replace(/\s+/g, " ").trim();
-  return !base || (/^\d+(?:[.,]\d+)?\s*(?:kms?|k|metros?|m)$/i.test(base)
-    && normalizeDistance(base) === normalizeDistance(distance ?? ""));
-}
 
 function publicTeamLabel(value: string) {
   // Some source rosters placed a RUT in the club column. Never print that ID.
@@ -39,11 +27,10 @@ function duration(seconds: number) {
   return [Math.floor(whole / 3600), Math.floor(whole / 60) % 60, whole % 60].map((p) => String(p).padStart(2, "0")).join(":") + "." + String(ms % 1000).padStart(3, "0");
 }
 
-// General by sex, meaningful base categories, then category + age bracket.
-// A distance/sex label such as "18KM Damas" already has its general podium.
-// The distance policy excludes general winners from every category/age podium.
+// PDF renders official general/category places without reconstructing groups from names.
 export function buildPodiumGroups(participants: PodiumCandidate[], policies: PodiumPolicy[]): PodiumGroup[] {
-  const policyByDistance = new Map(policies.map((p) => [normalizeDistance(p.distance), p]));
+  // Policy and replacement ranks have already been applied by the results engine.
+  void policies;
   const groups = new Map<string, { group: PodiumGroup; people: PodiumCandidate[] }>();
   function add(person: PodiumCandidate, type: PodiumGroup["type"], category = "", ageBracket = "") {
     const distance = normalizeDistance(person.distance ?? "") ?? "Sin distancia";
@@ -55,31 +42,15 @@ export function buildPodiumGroups(participants: PodiumCandidate[], policies: Pod
   }
   for (const person of participants) {
     if (person.result_status !== "FINALIZÓ" || person.elapsed_seconds === null || !Number.isFinite(Number(person.elapsed_seconds)) || Number(person.elapsed_seconds) < 0) continue;
-    const recordedBracket = person.age_bracket?.trim() ?? "";
-    const bracket = normalizeAgeBracket(recordedBracket) || recordedBracket || normalizeAgeBracket(person.category ?? "") || "";
-    // Older rosters can encode the age range only in the category label.
-    const categoryForBase = !recordedBracket && bracket
-      ? categoryWithGender(person.category, normalizeParticipantSex(person.sex ?? ""), bracket)
-      : person.category;
-    const baseCategory = participantBaseCategory(categoryForBase, recordedBracket || bracket) ?? "";
-    const category = isGeneralCategory(baseCategory, person.distance, person.sex) ? "" : baseCategory;
     add(person, "General");
-    const policy = policyByDistance.get(normalizeDistance(person.distance ?? ""));
-    const excluded = policy?.award_policy_configured && policy.exclude_general_top3_from_categories && person.overall_place != null && Number(person.overall_place) >= 1 && Number(person.overall_place) <= 3;
-    if (category && !excluded) add(person, "Categoría", category);
-    if (bracket && !excluded) add(person, "Grupo etario", category, bracket);
+    if (categoryIdentity(person) && person.category_place != null) add(person, "Categoría", "", ageGroupValue(person.age_bracket) ?? "");
   }
   for (const { group, people } of groups.values()) {
     people.sort((a, b) => Number(a.elapsed_seconds) - Number(b.elapsed_seconds) || collate(a.bib ?? "", b.bib ?? ""));
-    let previous: number | null = null;
-    let place = 0;
-    people.forEach((person, index) => {
-      const elapsed = Number(person.elapsed_seconds);
-      if (group.type === "General") place = Number(person.overall_place ?? 0);
-      else if (elapsed !== previous) place = index + 1;
-      if (place >= 1 && place <= 3) group.rows.push({ place, bib: person.bib ?? "—", name: participantDisplayName(person.first_name, person.last_name), team: publicTeamLabel(person.team ?? ""), time: duration(elapsed) });
-      previous = elapsed;
-    });
+    for (const person of people) {
+      const place = Number(group.type === "General" ? person.overall_place : person.category_place);
+      if (place >= 1 && place <= 3) group.rows.push({ place, bib: person.bib ?? "—", name: participantDisplayName(person.first_name, person.last_name), team: publicTeamLabel(person.team ?? ""), time: duration(Number(person.elapsed_seconds)) });
+    }
   }
   const order = { General: 0, "Categoría": 1, "Grupo etario": 2 };
   return [...groups.values()].map(({ group }) => group).filter((g) => g.rows.length).sort((a, b) =>

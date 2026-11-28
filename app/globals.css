@@ -600,6 +600,12 @@ button { cursor: pointer; }
 }
 /* Operator tools: roster edits, audited withdrawals and manual finish sheet. */
 .participant-actions { display: flex; gap: .4rem; flex-wrap: wrap; min-width: 170px; }
+.roster-filter-form { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
+.roster-filter-form label { display: grid; gap: 6px; flex: 1 1 150px; min-width: 0; }
+.roster-filter-form input, .roster-filter-form select { width: 100%; min-height: 39px; padding: 8px 10px; border: 1px solid #dde4dc; border-radius: 4px; background: #fff; color: var(--ink); font: inherit; }
+.roster-filter-form label:has(select[name="roster_category"]) { flex-basis: 240px; }
+.roster-pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.roster-pagination [aria-disabled="true"] { opacity: .45; cursor: default; }
 .operator-dialog { width: min(760px, calc(100vw - 32px)); max-height: 90vh; border: 1px solid #d3dce3; border-radius: 12px; padding: 24px; color: #172b39; background: #fff; overflow-y: auto; }
 .operator-dialog::backdrop { background: rgb(12 27 39 / 55%); }
 .operator-dialog-heading, .operator-dialog-footer, .manual-grid-tools { display: flex; gap: 12px; align-items: center; justify-content: space-between; margin: 12px 0; }

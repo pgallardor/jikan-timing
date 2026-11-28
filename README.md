@@ -2,6 +2,14 @@
 
 App Router de Next.js y Supabase local para llevar eventos de carrera, nóminas, marcas, resultados y un QR por evento. Los datos viven en el Postgres local; no se necesita un proyecto alojado.
 
+## Nómina paginada del administrador
+
+La tabla muestra 50 participantes por página. Permite buscar coincidencias parciales de dorsal y chip, y combinar selectores de sexo, distancia y categoría calculada. Los filtros buscan en toda la nómina y se conservan en la URL al avanzar o retroceder; aplicar filtros vuelve a la primera página. El botón **Limpiar** restablece la consulta.
+
+La paginación agrega consultas de solo lectura sobre `event_participants`, con la sesión y las políticas RLS existentes. Los resúmenes, los puestos, los exportadores y la comparación de importaciones conservan el conjunto completo del evento; una página o un filtro no limita las operaciones globales. Las acciones de edición, marcas y auditoría mantienen su comportamiento.
+
+Para publicar esta mejora basta con desplegar la web mediante el proceso habitual: no requiere migraciones, cambios de configuración, dependencias nuevas ni modificar los datos existentes. Validar antes con `pnpm test:roster`, `pnpm test:operator`, `pnpm typecheck` y `pnpm build`. La reversión consiste en volver a desplegar la versión anterior de la web.
+
 ## Arranque local
 
 Requiere Node.js 20.9 o superior, pnpm y Docker Desktop en ejecución.

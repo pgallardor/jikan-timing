@@ -25,6 +25,8 @@ import ParticipantCategoryFields from "@/components/participant-category-fields"
 import { ageGroupValue, categoryLabel } from "@/lib/classification";
 import ManualFinishesGrid from "@/components/manual-finishes-grid";
 import RosterImporter from "@/components/roster-importer";
+import { RosterFiltersForm, RosterPagination } from "@/components/roster-navigation";
+import { fetchRosterPage, parseRosterFilters, rosterCategoryOptions, rosterPageHref, type RosterSearchParams } from "@/lib/roster-pagination";
 import EventTransferUploader from "@/components/event-transfer-uploader";
 import { createClient } from "@/lib/supabase/server";
 import { datetimeLocalValue, formatDateTime, participantDisplayName } from "@/lib/format";
@@ -148,10 +150,12 @@ export default async function EventPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ ok?: string; error?: string; batch_saved?: string }>;
+  searchParams: Promise<RosterSearchParams>;
 }) {
   const { id } = await params;
   const notice = await searchParams;
+  const rosterFilters = parseRosterFilters(notice);
+  const showRoster = notice.tab === "roster";
   const supabase = await createClient();
   const [
     { data: event },
@@ -217,6 +221,15 @@ export default async function EventPage({
       result_status: person.dnf_at ? "DNF" : result?.result_status ?? (startAt && finishAt ? "FINALIZÓ" : finishAt ? "LLEGADA SIN SALIDA" : startAt ? "EN CARRERA" : "SIN DATOS"),
     };
   });
+  const rosterCategories = rosterCategoryOptions(participantRoster ?? []);
+  const rosterPage = await fetchRosterPage(supabase, id, rosterFilters, rosterCategories,
+    (participantRoster ?? []).flatMap((person) => person.distance ? [person.distance] : []));
+  const rosterById = new Map(rosterPeople.map((person) => [person.id, person]));
+  const visibleRoster = rosterPage.ids.flatMap((participantId) => {
+    const person = rosterById.get(participantId);
+    return person ? [person] : [];
+  });
+  const rosterPageIncomplete = visibleRoster.length !== rosterPage.ids.length;
   const missingResultRows = rosterPeople.filter((person) => !resultsByParticipantId.has(person.participant_id)).length;
   const completed = rosterPeople.filter((person) => person.result_status !== "DNF" && person.start_at && person.finish_at && person.elapsed_seconds != null && Number.isFinite(Number(person.elapsed_seconds)) && Number(person.elapsed_seconds) >= 0);
   const completedIds = new Set(completed.map((person) => person.participant_id));
@@ -288,7 +301,7 @@ export default async function EventPage({
       <strong>{statusLabels[event.status] ?? event.status}:</strong> la recepción RFID remota está bloqueada. El lector recibirá un rechazo mientras el evento no esté En curso.
       {event.status === "draft" && " Cambiar el estado habilita la recepción; no registra la hora de salida de ninguna distancia."}
     </p>}
-    <AdminEventTabs eventId={id} />
+    <AdminEventTabs eventId={id} key={rosterPageHref(id, rosterFilters) + showRoster} initialTab={showRoster ? "roster" : undefined} />
     {notice.ok && <p className="notice">{notice.ok}</p>}{notice.error && <p className="notice error">{notice.error}</p>}
     {participantChangesError && <p className="notice" role="status">Las herramientas de edición, baja, DNF individual y planilla manual requieren la migración de herramientas del operador. Estarán deshabilitadas hasta que se aplique y su historial pueda consultarse.</p>}
     {(resultsError || timingEntriesError || distancesError || participantRosterError || missingResultRows > 0) && <p className="notice error" role="status">
@@ -339,7 +352,7 @@ export default async function EventPage({
     </section> : null}
     </div>
 
-    <div data-event-tab-panel="results">
+    <div data-event-tab-panel="results" hidden={showRoster}>
     <section className="metric-row">
       <div className="metric-card"><span>Corredores</span><strong>{rosterPeople.length}</strong></div>
       <div className="metric-card"><span>En carrera</span><strong>{resultsError || timingEntriesError || participantRosterError ? "—" : onCourse.length}</strong></div>
@@ -489,7 +502,7 @@ export default async function EventPage({
         </form>
         <p className="setting-caption">Ingresa el tiempo transcurrido desde la salida; el sistema calcula la hora de llegada automáticamente. Admite HH:MM:SS o MM:SS, opcionalmente con centésimas o milésimas. Si ya tenía llegada, conserva la marca anterior en el historial.</p>
         <div className="correction-import-block"><ManualFinishesGrid eventId={id} timeZone={event.timezone} disabled={operatorToolsDisabled || Boolean(resultsError || participantRosterError || timingEntriesError) || missingResultRows > 0}
-          savedToken={notice.batch_saved ?? null}
+          savedToken={typeof notice.batch_saved === "string" ? notice.batch_saved : null}
           participants={rosterPeople.map((person) => ({ id: person.id, bib: person.bib, name: participantDisplayName(person.first_name, person.last_name), startAt: person.start_at, finishAt: person.finish_at, dnf: Boolean(person.dnf_at) }))} /></div>
         <div className="correction-import-block">
           <div><h3>Cargar rectificaciones desde CSV</h3><p>Previsualiza varias llegadas por dorsal y aplica el lote con un motivo común en el historial.</p></div>
@@ -503,7 +516,7 @@ export default async function EventPage({
       </div>
     </section>
 
-    <section className="panel" id="nomina" data-event-tab-panel="roster" hidden>
+    <section className="panel" id="nomina" data-event-tab-panel="roster" hidden={!showRoster}>
       <div className="panel-heading"><div><p className="eyebrow">NÓMINA DEL EVENTO</p><h2>Participantes y marcas</h2></div><span className="muted">{rosterPeople.length} participantes</span></div>
       <div className="panel-body">
         {awardPoliciesReady ? <form action={addParticipantAction} className="participant-form">
@@ -525,10 +538,13 @@ export default async function EventPage({
               distances={(distances ?? []).map((distance) => distance.distance)}
             />}
       </div>
+      <RosterFiltersForm eventId={id} filters={rosterFilters} distances={resultDistances} categories={rosterCategories} />
+      {rosterPage.error || rosterPageIncomplete ? <p className="notice error" role="alert">No se pudo cargar la página de la nómina. Actualiza la vista antes de administrar corredores.</p>
+        : <RosterPagination eventId={id} filters={rosterFilters} count={rosterPage.count} page={rosterPage.page} pages={rosterPage.pages} />}
       <div className="table-wrap"><table className="data-table"><thead><tr><th>Dorsal</th><th>Nombre</th><th>Apellidos</th><th>Chip</th><th>Edad</th><th>Categoría</th><th>Estado</th><th>Administrar corredor</th><th>Salida</th><th>Registrar / corregir salida</th><th>Llegada</th><th>Registrar / corregir llegada</th></tr></thead><tbody>
-        {participantRosterError
+        {participantRosterError || rosterPage.error || rosterPageIncomplete
           ? <tr><td colSpan={12} className="muted">No se pudo leer la nómina del evento.</td></tr>
-          : rosterPeople.length ? rosterPeople.map((person) => <tr key={person.participant_id}>
+          : visibleRoster.length ? visibleRoster.map((person) => <tr key={person.participant_id}>
           <td className="bib-cell">{person.bib || "—"}</td>
           <td className="person-cell"><strong>{person.first_name}</strong><small>{person.team || person.sex || " "}</small></td><td>{person.last_name || "—"}</td>
           <td>{person.chip || <span className="muted">Sin chip</span>}</td><td>{person.age ?? "—"}</td><td>{categoryLabel(person) ?? "Sin categoría: completa sexo y grupo etario"}</td>
@@ -538,8 +554,9 @@ export default async function EventPage({
           <td><EntryActions eventId={id} participantId={person.participant_id} stage="start" value={person.start_at} startAt={person.start_at} timeZone={event.timezone} /></td>
           <td><TimeCell value={person.finish_at} origin={person.finish_origin} timeZone={event.timezone} /></td>
           <td><EntryActions eventId={id} participantId={person.participant_id} stage="finish" value={person.finish_at} startAt={person.start_at} timeZone={event.timezone} /></td>
-        </tr>) : <tr><td colSpan={12} className="muted">Aún no hay corredores. Añade uno o carga la nómina en CSV o XLSX cuando esté lista.</td></tr>}
+        </tr>) : <tr><td colSpan={12} className="muted">{rosterPeople.length ? "No hay participantes que coincidan con los filtros." : "Aún no hay corredores. Añade uno o carga la nómina en CSV o XLSX cuando esté lista."}</td></tr>}
       </tbody></table></div>
+      {!participantRosterError && !rosterPage.error && !rosterPageIncomplete && <RosterPagination eventId={id} filters={rosterFilters} count={rosterPage.count} page={rosterPage.page} pages={rosterPage.pages} />}
     </section>
 
     <section className="settings-grid" id="configuracion" data-event-tab-panel="settings" hidden>

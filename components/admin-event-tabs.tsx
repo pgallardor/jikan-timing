@@ -12,17 +12,21 @@ const tabs = [
   ["history", "Historial"],
 ] as const;
 
-export default function AdminEventTabs({ eventId }: { eventId: string }) {
+export default function AdminEventTabs({ eventId, initialTab }: { eventId: string; initialTab?: "roster" }) {
   const storageKey = `admin-event-tab:${eventId}`;
-  const [selected, setSelected] = useState<(typeof tabs)[number][0]>("results");
+  const [selected, setSelected] = useState<(typeof tabs)[number][0]>(initialTab ?? "results");
 
   useEffect(() => {
+    if (initialTab) {
+      try { window.localStorage.setItem(storageKey, initialTab); } catch { /* The explicit tab still works without storage. */ }
+      return;
+    }
     let saved: string | null = null;
     try { saved = window.localStorage.getItem(storageKey); } catch { return; }
     if (!tabs.some(([id]) => id === saved)) return;
     const timeout = window.setTimeout(() => setSelected(saved as (typeof tabs)[number][0]), 0);
     return () => window.clearTimeout(timeout);
-  }, [storageKey]);
+  }, [storageKey, initialTab]);
 
   useEffect(() => {
     const panels = document.querySelectorAll<HTMLElement>("[data-event-tab-panel]");
